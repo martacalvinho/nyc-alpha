@@ -86,13 +86,17 @@ const Stepper = ({ currentStep }) => {
 
 function AlphaNavigator() {
     const [currentAppStep, setCurrentAppStep] = useState(1); // 1: Select, 2: Map, 3: Load, 4: Analyze
-    const [selection, setSelection] = useState({ borough: 'manhattan', neighborhood: 'All Manhattan' });
+    const [selection, setSelection] = useState({ 
+        borough: 'manhattan', 
+        neighborhood: 'All Manhattan',
+        ntaCode: '' // Add NTA code to the selection state
+    });
     const [showMap, setShowMap] = useState(false); // Map is hidden by default
 
     // Use our property processor hook
     const { leads, isLoading, error, stats, progress, refreshData } = usePropertyProcessor(
         selection.borough,
-        selection.neighborhood
+        selection // Pass the entire selection object to get access to the ntaCode
     );
 
     // Handle selection changes from dropdown or map
@@ -110,9 +114,13 @@ function AlphaNavigator() {
     const handleMapNeighborhoodSelect = useCallback((ntaName) => {
         console.log('Map selection:', ntaName);
         if (ntaName) {
+            // Try to find the matching NTA code from the neighborhood name
+            // This would need to be enhanced with a proper mapping if available
+            // For now, we'll set just the name which should work with our existing code
             setSelection(prev => ({
                 ...prev,
-                neighborhood: ntaName
+                neighborhood: ntaName,
+                ntaCode: '' // We'd need a lookup table to get the proper NTA code from the name
             }));
             setCurrentAppStep(3);
         }

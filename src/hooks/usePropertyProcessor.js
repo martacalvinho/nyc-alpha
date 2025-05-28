@@ -42,7 +42,10 @@ const monthsLeftUntil = (futureDate) => {
     return months ? -months : null; // Invert the sign (future = positive)
 };
 
-export function usePropertyProcessor(selectedBorough, selectedNeighborhood) {
+export function usePropertyProcessor(selectedBorough, selection) {
+    // Extract neighborhood info from the selection object
+    const selectedNeighborhood = selection?.neighborhood || 'All Manhattan';
+    const selectedNTACode = selection?.ntaCode || '';
     const [leads, setLeads] = useState([]);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState(null);
@@ -62,6 +65,8 @@ export function usePropertyProcessor(selectedBorough, selectedNeighborhood) {
             setIsLoading(false);
             return;
         }
+        
+        console.log('Processing selection:', { selectedBorough, neighborhood: selectedNeighborhood, ntaCode: selectedNTACode });
 
         setIsLoading(true);
         setError(null);
@@ -89,11 +94,22 @@ export function usePropertyProcessor(selectedBorough, selectedNeighborhood) {
             };
             const boroughCode = boroughCodes[selectedBorough.toLowerCase()];
             
-            // Get as much data as possible for the borough 
+            // Get data for the specific neighborhood when possible
             const plutoParams = {
                 borough: boroughCode,
                 $limit: 5000 // Get more data to increase chances of matches
             };
+            
+            // Add NTA filter if a specific neighborhood is selected
+            if (selectedNTACode) {
+                // Let's not use direct field filtering since we're not sure of the exact field name
+                // Instead, use the borough filter to get all properties in the borough
+                // We'll filter by NTA code client-side after fetching the data
+                console.log(`Will filter client-side for NTA code: ${selectedNTACode}`);
+            } else if (selectedNeighborhood && selectedNeighborhood !== 'All Manhattan') {
+                // For neighborhood name, same approach - just get borough data and filter after
+                console.log(`Will filter client-side for neighborhood: ${selectedNeighborhood}`);
+            }
             
             console.log('Using PLUTO params:', plutoParams);
             console.log('Fetching PLUTO data for:', selectedNeighborhood);
@@ -103,6 +119,68 @@ export function usePropertyProcessor(selectedBorough, selectedNeighborhood) {
                 const plutoRes = await axios.get(PLUTO_ENDPOINT, { params: plutoParams });
                 plutoDataRaw = plutoRes.data;
                 console.log('PLUTO data received:', plutoDataRaw.length, 'records');
+                
+                // Debug the PLUTO data structure
+                if (plutoDataRaw.length > 0) {
+                    console.log('First PLUTO record fields:', Object.keys(plutoDataRaw[0]));
+                    console.log('Sample PLUTO record:', plutoDataRaw[0]);
+                }
+                
+                // If we have NTA code or neighborhood, filter the data client-side
+                if (selectedNTACode && plutoDataRaw.length > 0) {
+                    console.log(`Filtering ${plutoDataRaw.length} properties by NTA code: ${selectedNTACode}`);
+                    
+                    // First try to find any NTA field
+                    const possibleNtaFields = ['ntacode', 'nta', 'nta2020', 'nta_code', 'ntaname', 'cd', 'borocd', 'boro_cd', 'bbl'];
+                    
+                    // Check which fields exist in the data
+                    const existingFields = [];
+                    for (const field of possibleNtaFields) {
+                        if (plutoDataRaw[0][field] !== undefined) {
+                            existingFields.push(field);
+                            console.log(`Found potential field in PLUTO data: ${field} = ${plutoDataRaw[0][field]}`);
+                        }
+                    }
+                    
+                    // Try to filter using different strategies
+                    let filteredData = plutoDataRaw;
+                    
+                    // For Upper West Side (MN12), Community District is 107 or 107/108
+                    if (selectedNTACode === 'MN12' && (plutoDataRaw[0].cd || plutoDataRaw[0].borocd)) {
+                        const cdField = plutoDataRaw[0].cd ? 'cd' : 'borocd';
+                        filteredData = plutoDataRaw.filter(p => p[cdField] === '107' || p[cdField] === '108');
+                        console.log(`Filtered by Community District 107/108 for Upper West Side: ${filteredData.length} properties`);
+                    }
+                    // For Upper East Side (MN40), Community District is 108
+                    else if (selectedNTACode === 'MN40' && (plutoDataRaw[0].cd || plutoDataRaw[0].borocd)) {
+                        const cdField = plutoDataRaw[0].cd ? 'cd' : 'borocd';
+                        filteredData = plutoDataRaw.filter(p => p[cdField] === '108');
+                        console.log(`Filtered by Community District 108 for Upper East Side: ${filteredData.length} properties`);
+                    }
+                    // For other neighborhoods, try using ZIP codes or other geographic indicators
+                    else if (plutoDataRaw[0].zipcode) {
+                        // We could add zip code mapping here if needed
+                        console.log('Found zipcode field, but no mapping implemented for this NTA');
+                    } 
+                    // Last resort - keep all properties
+                    else {
+                        console.log('Using all properties from borough without NTA filtering');
+                    }
+                    
+                    plutoDataRaw = filteredData;
+                }
+                
+                // If we specifically selected Upper West Side and there's no other filtering
+                if (selectedNeighborhood === 'Upper West Side' && plutoDataRaw.length > 3000) {
+                    // Community Districts for Upper West Side are 107 and 108
+                    const cdField = plutoDataRaw[0].cd ? 'cd' : (plutoDataRaw[0].borocd ? 'borocd' : null);
+                    if (cdField) {
+                        const filteredData = plutoDataRaw.filter(p => p[cdField] === '107' || p[cdField] === '108');
+                        console.log(`Filtered to ${filteredData.length} properties in Upper West Side CDs (107/108)`);
+                        plutoDataRaw = filteredData;
+                    }
+                }
+                
                 setProgress(p => ({ ...p, pluto: `${plutoDataRaw.length} records found` }));
                 
                 // If we didn't get any data, log the issue
@@ -168,68 +246,194 @@ export function usePropertyProcessor(selectedBorough, selectedNeighborhood) {
             //   c. Fetch Master records for those document_ids.
             // For now, fetch recent Legals & Master for the borough and filter.
 
-            // Fetch Legals by borough - with more conservative parameters
-            console.log('Fetching ACRIS Legals for borough code:', acrisBoroughCode);
-            let legalsRes = { data: [] }; // Default empty response
+            // Extract the BBLs from the PLUTO data to make targeted queries
+            const targetBBLs = Object.keys(properties);
+            console.log('Target BBLs for queries:', targetBBLs.length);
+            
+            // Batch BBLs for query parameters to avoid URL length limits
+            const createBblBatches = (bbls, batchSize = 50) => {
+                const batches = [];
+                for (let i = 0; i < bbls.length; i += batchSize) {
+                    batches.push(bbls.slice(i, i + batchSize));
+                }
+                return batches;
+            };
+            
+            // Create batches of BBLs for querying other APIs
+            const bblBatches = createBblBatches(targetBBLs);
+            console.log(`Created ${bblBatches.length} BBL batches for targeted queries`);
+            
+            // Fetch ACRIS Legals data using the target BBLs
+            console.log('Fetching ACRIS Legals for target BBLs');
+            let allLegalsInArea = [];
+            const docIdToBblMap = {};
+            
+            setProgress(p => ({ ...p, acris: 'fetching legals by BBLs...' }));
+            
             try {
-                console.log('Attempting ACRIS Legals API call with smaller limit...');
-                // Use a smaller limit, simpler query
-                legalsRes = await axios.get(LEGALS_ENDPOINT, {
-                    params: {
-                        $limit: 1000, // Use smaller limit to avoid API constraints
-                        borough: acrisBoroughCode
-                        // Removed $order parameter which may be causing issues
+                // Process each batch to avoid overwhelming the API
+                for (let batchIndex = 0; batchIndex < bblBatches.length; batchIndex++) {
+                    const batch = bblBatches[batchIndex];
+                    
+                    // Create BBL components for ACRIS query ($where needs borough, block, lot)
+                    const bblQueryParts = batch.map(bbl => {
+                        const borough = bbl.substring(0, 1);
+                        const block = parseInt(bbl.substring(1, 6), 10);
+                        const lot = parseInt(bbl.substring(6, 10), 10);
+                        return `(borough='${borough}' AND block='${block}' AND lot='${lot}')`;
+                    });
+                    
+                    const bblQueryString = bblQueryParts.join(' OR ');
+                    
+                    // Only proceed if we have a valid query
+                    if (bblQueryString) {
+                        try {
+                            console.log(`Fetching ACRIS Legals batch ${batchIndex + 1}/${bblBatches.length}`);
+                            const legalsRes = await axios.get(LEGALS_ENDPOINT, {
+                                params: {
+                                    $where: bblQueryString,
+                                    $limit: 100 * batch.length // Adjust limit based on batch size
+                                }
+                            });
+                            
+                            allLegalsInArea = [...allLegalsInArea, ...legalsRes.data];
+                            console.log(`Batch ${batchIndex + 1}: Got ${legalsRes.data.length} ACRIS Legals records`);
+                            
+                            // Add a small delay between batches to avoid rate limiting
+                            if (batchIndex < bblBatches.length - 1) {
+                                await new Promise(resolve => setTimeout(resolve, 100));
+                            }
+                        } catch (err) {
+                            console.error(`Error fetching ACRIS Legals batch ${batchIndex + 1}:`, err.message);
+                        }
+                    }
+                }
+                
+                console.log('ACRIS Legals received:', allLegalsInArea.length);
+                setProgress(p => ({ ...p, acris: `${allLegalsInArea.length} legals fetched` }));
+                
+                // Create a map of document_id to BBL from Legals for properties we care about
+                allLegalsInArea.forEach(legal => {
+                    const legalBbl = makeBBL(legal.borough, legal.block, legal.lot);
+                    if (legalBbl && properties[legalBbl]) {
+                        if (!docIdToBblMap[legal.document_id]) {
+                            docIdToBblMap[legal.document_id] = [];
+                        }
+                        docIdToBblMap[legal.document_id].push(legalBbl);
                     }
                 });
-                console.log('ACRIS Legals API call successful');
             } catch (err) {
-                console.error('Error fetching ACRIS Legals:', err.message);
+                console.error('Error in ACRIS Legals processing:', err.message);
                 setProgress(p => ({ ...p, acris: `Error: ${err.message}` }));
-                // Continue with empty data rather than failing
-                legalsRes = { data: [] };
             }
-            const allLegalsInBorough = legalsRes.data;
-            console.log('ACRIS Legals received:', allLegalsInBorough.length);
-
-            // Create a map of document_id to BBL from Legals for properties we care about
-            const docIdToBblMap = {};
-            allLegalsInBorough.forEach(legal => {
-                const legalBbl = makeBBL(legal.borough, legal.block, legal.lot);
-                if (legalBbl && properties[legalBbl]) {
-                    if (!docIdToBblMap[legal.document_id]) {
-                        docIdToBblMap[legal.document_id] = [];
-                    }
-                    docIdToBblMap[legal.document_id].push(legalBbl);
-                }
-            });
             console.log('Relevant document IDs found:', Object.keys(docIdToBblMap).length);
 
-            // Fetch Master records for the borough with error handling
-            console.log('Fetching ACRIS Master records for borough:', acrisBoroughCode);
-            let masterRes = { data: [] };
-            try {
-                masterRes = await axios.get(MASTER_ENDPOINT, {
-                    params: {
-                        $limit: 1000, // Smaller limit to avoid API constraints
-                        recorded_borough: acrisBoroughCode,
-                        doc_type: 'DEED' // Focus on actual sales
-                        // Removed $order to simplify request
-                    }
-                });
-                console.log('ACRIS Master API call successful');
-                setProgress(p => ({ ...p, acris: `${allLegalsInBorough.length} legals, ${masterRes.data.length} deeds fetched` }));
-            } catch (err) {
-                console.error('Error fetching ACRIS Master:', err.message);
-                setProgress(p => ({ ...p, acris: `Legals OK, Master error: ${err.message}` }));
-                // Continue with empty data rather than failing
-            }
-            const deedMasterRecords = masterRes.data;
-            console.log('ACRIS Master records received:', deedMasterRecords.length);
+            // Fetch Master records for the specific document IDs we found in Legals
+            console.log('Relevant document IDs found:', Object.keys(docIdToBblMap).length);
             
-            // Skip ACRIS data for now due to API limitations
-            setProgress(p => ({ ...p, mortgages: 'skipping for now (API limitations)' }));
+            let deedMasterRecords = [];
+            
+            if (Object.keys(docIdToBblMap).length > 0) {
+                setProgress(p => ({ ...p, acris: `${allLegalsInArea.length} legals, fetching deeds...` }));
+                
+                // Batch the document IDs for the Master query
+                const docIdBatches = createBblBatches(Object.keys(docIdToBblMap), 50);
+                
+                for (let batchIndex = 0; batchIndex < docIdBatches.length; batchIndex++) {
+                    const batch = docIdBatches[batchIndex];
+                    const docIdQueryParts = batch.map(docId => `document_id='${docId}'`);
+                    const docIdQueryString = docIdQueryParts.join(' OR ');
+                    
+                    try {
+                        console.log(`Fetching ACRIS Master batch ${batchIndex + 1}/${docIdBatches.length}`);
+                        const masterRes = await axios.get(MASTER_ENDPOINT, {
+                            params: {
+                                $where: docIdQueryString,
+                                $limit: 100 * batch.length,
+                                doc_type: 'DEED' // Focus on actual sales
+                            }
+                        });
+                        
+                        deedMasterRecords = [...deedMasterRecords, ...masterRes.data];
+                        console.log(`Batch ${batchIndex + 1}: Got ${masterRes.data.length} ACRIS Master records`);
+                        
+                        // Add a small delay between batches
+                        if (batchIndex < docIdBatches.length - 1) {
+                            await new Promise(resolve => setTimeout(resolve, 100));
+                        }
+                    } catch (err) {
+                        console.error(`Error fetching ACRIS Master batch ${batchIndex + 1}:`, err.message);
+                    }
+                }
+                
+                console.log('ACRIS Master records received:', deedMasterRecords.length);
+                setProgress(p => ({ ...p, acris: `${allLegalsInArea.length} legals, ${deedMasterRecords.length} deeds fetched` }));
+            } else {
+                console.log('No document IDs found, skipping Master records fetch');
+                setProgress(p => ({ ...p, acris: 'No matching document IDs found' }));
+            }
+            
+            // Fetch mortgage data from ACRIS
+            console.log('Fetching ACRIS Mortgage records...');
+            setProgress(p => ({ ...p, mortgages: 'loading...' }));
             let mortgageRecords = [];
-            console.log('Skipping ACRIS data fetch due to API limitations');
+            try {
+                // Get the document IDs we found from master records
+                const relevantDocumentIds = deedMasterRecords
+                    .filter(master => docIdToBblMap[master.document_id])
+                    .map(master => master.document_id);
+                
+                console.log('Relevant document IDs for mortgages:', relevantDocumentIds.length);
+                
+                // If we have document IDs to search for
+                if (relevantDocumentIds.length > 0) {
+                    // Batch the requests to avoid overwhelming the API
+                    const BATCH_SIZE = 25;
+                    const batches = [];
+                    
+                    // Create batches of document IDs
+                    for (let i = 0; i < relevantDocumentIds.length; i += BATCH_SIZE) {
+                        batches.push(relevantDocumentIds.slice(i, i + BATCH_SIZE));
+                    }
+                    
+                    console.log(`Processing ${batches.length} batches of mortgage requests`);
+                    
+                    // Process each batch sequentially to avoid rate limits
+                    for (let i = 0; i < batches.length; i++) {
+                        const batch = batches[i];
+                        const batchQuery = batch.map(id => `document_id='${id}'`).join(' OR ');
+                        
+                        try {
+                            const mortgageRes = await axios.get(MORTGAGE_ENDPOINT, {
+                                params: {
+                                    $limit: 100,
+                                    $where: batchQuery
+                                }
+                            });
+                            
+                            // Add the results to our mortgage records
+                            mortgageRecords = [...mortgageRecords, ...mortgageRes.data];
+                            console.log(`Batch ${i+1}/${batches.length}: got ${mortgageRes.data.length} mortgages`);
+                            
+                            // Brief delay to avoid rate limiting
+                            if (i < batches.length - 1) {
+                                await new Promise(resolve => setTimeout(resolve, 100));
+                            }
+                        } catch (err) {
+                            console.error(`Error in mortgage batch ${i+1}:`, err.message);
+                        }
+                    }
+                    
+                    console.log(`Total mortgage records fetched: ${mortgageRecords.length}`);
+                    setProgress(p => ({ ...p, mortgages: `${mortgageRecords.length} records fetched` }));
+                } else {
+                    console.log('No relevant document IDs for mortgages');
+                    setProgress(p => ({ ...p, mortgages: 'No relevant document IDs found' }));
+                }
+            } catch (err) {
+                console.error('Error fetching mortgage data:', err.message);
+                setProgress(p => ({ ...p, mortgages: `Error: ${err.message}` }));
+            }
 
             // Match deed records to properties via the document_id → BBL map
             let salesMatchCount = 0;
@@ -321,29 +525,83 @@ export function usePropertyProcessor(selectedBorough, selectedNeighborhood) {
             // 3. Fetch DOB Jobs data
             setProgress(p => ({ ...p, dob: 'loading...' }));
             try {
-                console.log('Fetching DOB Jobs for borough:', boroughCode);
-                const dobJobsRes = await axios.get(DOBJOBS_ENDPOINT, {
-                    params: {
-                        $limit: 1000,
-                        borough: selectedBorough.toUpperCase()
+                console.log('Fetching DOB Jobs for target BBLs');
+                let allDobJobs = [];
+                
+                // Use the same BBL batches to query DOB jobs
+                for (let batchIndex = 0; batchIndex < bblBatches.length; batchIndex++) {
+                    const batch = bblBatches[batchIndex];
+                    
+                    // Convert BBLs to DOB format (which uses text borough, block, lot)
+                    const boroughMap = { '1': 'MANHATTAN', '2': 'BRONX', '3': 'BROOKLYN', '4': 'QUEENS', '5': 'STATEN ISLAND' };
+                    
+                    const dobQueryParts = batch.map(bbl => {
+                        const boroughCode = bbl.substring(0, 1);
+                        const boroughText = boroughMap[boroughCode];
+                        const block = parseInt(bbl.substring(1, 6), 10).toString();
+                        const lot = parseInt(bbl.substring(6, 10), 10).toString();
+                        return `(borough='${boroughText}' AND block='${block}' AND lot='${lot}')`;
+                    });
+                    
+                    const dobQueryString = dobQueryParts.join(' OR ');
+                    
+                    try {
+                        console.log(`Fetching DOB Jobs batch ${batchIndex + 1}/${bblBatches.length}`);
+                        const dobJobsRes = await axios.get(DOBJOBS_ENDPOINT, {
+                            params: {
+                                $where: dobQueryString,
+                                $limit: 50 * batch.length
+                            }
+                        });
+                        
+                        allDobJobs = [...allDobJobs, ...dobJobsRes.data];
+                        console.log(`Batch ${batchIndex + 1}: Got ${dobJobsRes.data.length} DOB Jobs`);
+                        
+                        // Add a small delay between batches
+                        if (batchIndex < bblBatches.length - 1) {
+                            await new Promise(resolve => setTimeout(resolve, 100));
+                        }
+                    } catch (err) {
+                        console.error(`Error fetching DOB Jobs batch ${batchIndex + 1}:`, err.message);
                     }
-                });
+                }
+                
+                console.log('DOB Jobs received:', allDobJobs.length);
+                const dobJobsRes = { data: allDobJobs };
                 
                 const dobJobs = dobJobsRes.data;
                 console.log('DOB Jobs received:', dobJobs.length);
                 
                 // Match DOB jobs to properties
+                // Map DOB borough text names to numeric codes
+                const dobBoroughToNumeric = {
+                    'MANHATTAN': '1',
+                    'BRONX': '2',
+                    'BROOKLYN': '3',
+                    'QUEENS': '4',
+                    'STATEN ISLAND': '5'
+                };
+                
+                let dobJobsMatched = 0;
                 dobJobs.forEach(job => {
                     // Try to construct BBL from job data
-                    if (job.block && job.lot) {
-                        const jobBbl = makeBBL(acrisBoroughCode, job.block, job.lot);
-                        if (jobBbl && properties[jobBbl]) {
-                            // If we have jobs.length property, use it, otherwise init to 1
-                            properties[jobBbl].dobJobs = properties[jobBbl].dobJobs || [];
-                            properties[jobBbl].dobJobs.push(job);
+                    if (job.block && job.lot && job.borough) {
+                        // Convert text borough to numeric code
+                        const numericJobBorough = dobBoroughToNumeric[job.borough.toUpperCase()];
+                        
+                        if (numericJobBorough) {
+                            const jobBbl = makeBBL(numericJobBorough, job.block, job.lot);
+                            if (jobBbl && properties[jobBbl]) {
+                                // If we have jobs.length property, use it, otherwise init to 1
+                                properties[jobBbl].dobJobs = properties[jobBbl].dobJobs || [];
+                                properties[jobBbl].dobJobs.push(job);
+                                dobJobsMatched++;
+                            }
                         }
                     }
                 });
+                
+                console.log(`DOB Jobs matched to properties: ${dobJobsMatched}`);
                 
                 setProgress(p => ({ ...p, dob: `${dobJobs.length} records processed` }));
             } catch (err) {
@@ -355,22 +613,56 @@ export function usePropertyProcessor(selectedBorough, selectedNeighborhood) {
             // 4. Fetch 311 complaints
             setProgress(p => ({ ...p, 311: 'loading...' }));
             try {
-                console.log('Fetching 311 complaints for borough:', selectedBorough);
-                const threeoneoneRes = await axios.get(THREEONEONE_ENDPOINT, {
-                    params: {
-                        $limit: 1000,
-                        borough: selectedBorough.toUpperCase()
+                console.log('Fetching 311 complaints for target BBLs');
+                let all311Complaints = [];
+                
+                // Use the same BBL batches to query 311 complaints
+                for (let batchIndex = 0; batchIndex < bblBatches.length; batchIndex++) {
+                    const batch = bblBatches[batchIndex];
+                    
+                    // 311 dataset has direct BBL field we can use
+                    const bblQueryParts = batch.map(bbl => `bbl='${bbl}'`);
+                    const bblQueryString = bblQueryParts.join(' OR ');
+                    
+                    try {
+                        console.log(`Fetching 311 complaints batch ${batchIndex + 1}/${bblBatches.length}`);
+                        const threeoneoneRes = await axios.get(THREEONEONE_ENDPOINT, {
+                            params: {
+                                $where: bblQueryString,
+                                $limit: 50 * batch.length
+                            }
+                        });
+                        
+                        all311Complaints = [...all311Complaints, ...threeoneoneRes.data];
+                        console.log(`Batch ${batchIndex + 1}: Got ${threeoneoneRes.data.length} 311 complaints`);
+                        
+                        // Add a small delay between batches
+                        if (batchIndex < bblBatches.length - 1) {
+                            await new Promise(resolve => setTimeout(resolve, 100));
+                        }
+                    } catch (err) {
+                        console.error(`Error fetching 311 complaints batch ${batchIndex + 1}:`, err.message);
                     }
-                });
+                }
+                
+                console.log('311 complaints received:', all311Complaints.length);
+                const threeoneoneRes = { data: all311Complaints };
                 
                 const complaints = threeoneoneRes.data;
                 console.log('311 complaints received:', complaints.length);
                 
-                // Link complaints to properties by address matching (not ideal but functional)
+                // Link complaints to properties by BBL when available, then fallback to address matching
                 let complaintsMatched = 0;
                 complaints.forEach(complaint => {
-                    if (complaint.incident_address) {
-                        // Simple address matching - in a real app, you'd use geocoding
+                    // Try BBL matching first (more accurate)
+                    if (complaint.bbl && properties[complaint.bbl]) {
+                        const prop = properties[complaint.bbl];
+                        prop.complaints = prop.complaints || [];
+                        prop.complaints.push(complaint);
+                        complaintsMatched++;
+                    } 
+                    // Fallback to address matching if BBL not available or no match found
+                    else if (complaint.incident_address) {
                         Object.values(properties).forEach(prop => {
                             if (prop.address && complaint.incident_address.toUpperCase().includes(prop.address.toUpperCase())) {
                                 // Initialize complaints array if needed
@@ -568,21 +860,20 @@ export function usePropertyProcessor(selectedBorough, selectedNeighborhood) {
                 // Round score to one decimal place
                 prop.score = parseFloat(prop.score.toFixed(1));
                 
-                // Focus on reliable data signals from working APIs
-                // Check if this property has any relevant data worth showing
-                const hasRelevantData = 
-                    (prop.permitsLast12Months > 0) || // Has DOB jobs
-                    (prop.complaintsLast30Days > 0) || // Has complaints
-                    (prop.lastSaleDate && timeDiffInMonths(prop.lastSaleDate) < 60); // Sale within 5 years
+                // We want to show ALL properties from the targeted NTA
+                // We're already filtering properly by location, so include all properties
+                // Only minimal filtering to ensure property has an address
+                if (prop.address) {
+                    // If no specific indicators were found, still show the property but
+                    // with just the base score (2.0)
                     
-                // Make DOB jobs and complaints stronger indicators since ACRIS data is limited
-                if (prop.permitsLast12Months > 0 || prop.complaintsLast30Days > 0) {
-                    // Boost score for permits and complaints since we're lacking mortgage data
-                    prop.score += 0.5;
-                }
-                
-                // Filter to only show properties with useful information
-                if (hasRelevantData || prop.score > 2.0) {
+                    // Make DOB jobs and complaints stronger indicators since ACRIS data is limited
+                    if (prop.permitsLast12Months > 0 || prop.complaintsLast30Days > 0) {
+                        // Boost score for permits and complaints
+                        prop.score += 0.5;
+                    }
+                    
+                    // Add to the processed leads list - we want all properties
                     processedLeads.push(prop);
                     totalScoreSum += prop.score;
                 }
@@ -591,24 +882,11 @@ export function usePropertyProcessor(selectedBorough, selectedNeighborhood) {
             // Take the top 50 leads by score or all if fewer than 50
             processedLeads.sort((a, b) => b.score - a.score);
             
-            // If we have no leads, include some properties anyway as "potential leads"
-            let finalLeads = processedLeads;
-            if (processedLeads.length === 0) {
-                console.log('No leads match strict criteria, including sample properties');
-                // Include a sampling of properties as potential leads
-                finalLeads = Object.values(properties)
-                    .filter(p => p.address) // Must have an address at minimum
-                    .slice(0, 50);
-                    
-                // Give them a basic score
-                finalLeads.forEach(p => { 
-                    p.score = 2.0;
-                    p.isSampleLead = true; // Mark as sample lead
-                });
-            }
+            // NEVER use sample data - we should have real properties already
+            console.log('Using real properties only, no sample data fallback');
             
             // Limit to top 50 for performance
-            const displayLeads = finalLeads.slice(0, 50);
+            const displayLeads = processedLeads.slice(0, 50);
             
             console.log('Final leads count:', displayLeads.length);
             setLeads(displayLeads);
