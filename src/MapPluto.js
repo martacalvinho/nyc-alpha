@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
-const GEOJSON_URL = 'https://data.cityofnewyork.us/resource/cpf4-rkhq.geojson';
+const GEOJSON_URL = 'https://services5.arcgis.com/GfwWNkhOj9bNBqoJ/arcgis/rest/services/NYC_Neighborhood_Tabulation_Areas_2020/FeatureServer/0/query?where=1=1&outFields=*&outSR=4326&f=geojson';
 
 const MAP_STYLE = 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json';
 
@@ -64,12 +64,12 @@ export default function MapPluto({ selectedNeighborhood, setSelectedNeighborhood
           paint: {
             'fill-color': [
               'case',
-              ['==', ['get', 'ntaname'], selectedNeighborhood], '#1976d2',
+              ['==', ['get', 'NTAName'], selectedNeighborhood], '#1976d2',
               '#b3c6e6'
             ],
             'fill-opacity': [
               'case',
-              ['==', ['get', 'ntaname'], selectedNeighborhood], 0.65,
+              ['==', ['get', 'NTAName'], selectedNeighborhood], 0.65,
               0.30
             ]
           }
@@ -107,7 +107,7 @@ export default function MapPluto({ selectedNeighborhood, setSelectedNeighborhood
       }
       function handleClick(e) {
         if (e.features.length > 0) {
-          const ntaname = e.features[0].properties.ntaname;
+          const ntaname = e.features[0].properties.NTAName;
           setSelectedNeighborhood(ntaname);
         }
       }

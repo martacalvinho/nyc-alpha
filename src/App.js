@@ -5,6 +5,7 @@ import NeighborhoodMap from './NeighborhoodMap';
 import NeighborhoodSelector from './NeighborhoodSelector';
 import AcrisMortgageTable from './AcrisMortgageTable';
 import MapPluto from './MapPluto';
+import AlphaNavigator from './AlphaNavigator';
 import './App.css';
 
 const MASTER_ENDPOINT = 'https://data.cityofnewyork.us/resource/bnx9-e6tj.json';
@@ -515,15 +516,13 @@ function AcrisExplorer({ selection, setSelection }) {
 
 
 function App() {
-  const [showMortgageTable, setShowMortgageTable] = React.useState(false);
-  // Canonical selection state for both dropdown and map
+  const [activeTab, setActiveTab] = React.useState('alpha'); // 'alpha', 'explorer', 'mortgages'
   const [selection, setSelection] = React.useState({ borough: 'manhattan', neighborhood: 'All Manhattan' });
 
   // Handler for map click: update dropdown/table selection
   const handleMapNeighborhoodSelect = (ntaname) => {
     setSelection(sel => ({ ...sel, neighborhood: ntaname }));
   };
-
   // Handler for dropdown: update selection as before
   const handleDropdownSelect = (sel) => {
     setSelection(sel);
@@ -531,27 +530,50 @@ function App() {
 
   return (
     <div>
-      {/* Pass selection and setter to MapPluto for highlight and click */}
-      <MapPluto
-        selectedNeighborhood={selection.neighborhood}
-        setSelectedNeighborhood={handleMapNeighborhoodSelect}
-      />
-      <div style={{margin: '18px 0 12px 0', display: 'flex', gap: 10}}>
-        <button onClick={() => setShowMortgageTable(false)} disabled={!showMortgageTable}>
+      <div className="TabBar">
+        <div
+          className={`Tab${activeTab === 'alpha' ? ' active' : ''}`}
+          onClick={() => setActiveTab('alpha')}
+        >
+          Alpha Navigator
+        </div>
+        <div
+          className={`Tab${activeTab === 'explorer' ? ' active' : ''}`}
+          onClick={() => setActiveTab('explorer')}
+        >
           Main Explorer
-        </button>
-        <button onClick={() => setShowMortgageTable(true)} disabled={showMortgageTable}>
+        </div>
+        <div
+          className={`Tab${activeTab === 'mortgages' ? ' active' : ''}`}
+          onClick={() => setActiveTab('mortgages')}
+        >
           ACRIS Mortgages
-        </button>
+        </div>
       </div>
-      {/* Pass selection and setter to AcrisExplorer */}
-      {showMortgageTable ? (
-        <AcrisMortgageTable />
-      ) : (
-        <AcrisExplorer
-          selection={selection}
-          setSelection={handleDropdownSelect}
-        />
+      {activeTab === 'alpha' && (
+        <div>
+          <h2 style={{margin: '18px 0 10px 0'}}>NYC Alpha Navigator</h2>
+          <AlphaNavigator />
+        </div>
+      )}
+      {activeTab === 'explorer' && (
+        <div>
+          <h2 style={{margin: '18px 0 10px 0'}}>NYC ACRIS Explorer</h2>
+          <MapPluto
+            selectedNeighborhood={selection.neighborhood}
+            setSelectedNeighborhood={handleMapNeighborhoodSelect}
+          />
+          <AcrisExplorer
+            selection={selection}
+            setSelection={handleDropdownSelect}
+          />
+        </div>
+      )}
+      {activeTab === 'mortgages' && (
+        <div>
+          <h2 style={{margin: '18px 0 10px 0'}}>ACRIS Mortgages</h2>
+          <AcrisMortgageTable />
+        </div>
       )}
     </div>
   );
