@@ -91,25 +91,48 @@ const PropertyLeadsTable = ({ leads }) => {
     ];
 
     return (
-        <div style={{ overflowX: 'auto', marginTop: '20px', backgroundColor: 'white', padding: '15px', borderRadius: '8px' }}>
-             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                <h4>Property Leads ({filteredLeads.length} of {leads.length})</h4>
-                <div style={{ display: 'flex', alignItems: 'center' }}>
+        <div style={{ 
+            overflowX: 'auto', 
+            marginTop: '20px', 
+            backgroundColor: 'white', 
+            padding: '20px', 
+            borderRadius: '12px',
+            boxShadow: '0 3px 15px rgba(0,0,0,0.05)',
+        }}>
+             <div style={{ 
+                display: 'flex', 
+                justifyContent: 'space-between', 
+                alignItems: 'flex-start', 
+                marginBottom: '16px',
+                flexWrap: 'wrap',
+                gap: '16px'
+             }}>
+                <h4 style={{ 
+                    margin: '6px 0', 
+                    fontSize: '1.2rem', 
+                    color: '#334155',
+                    fontWeight: '600'
+                }}>Property Leads ({filteredLeads.length} of {leads.length})</h4>
+                <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
                     <div style={{ marginRight: '15px' }}>
-                        <span style={{ fontWeight: 'bold', marginRight: '10px' }}>Strategy:</span>
+                        <span style={{ fontWeight: '600', marginRight: '12px', color: '#334155' }}>Strategy:</span>
                         <button 
                             onClick={() => {
                                 setActiveFilter('all');
                                 setShowStrategyExplanation(true);
                             }}
                             style={{
-                                marginRight: '5px',
-                                backgroundColor: activeFilter === 'all' ? '#1976d2' : '#f0f0f0',
-                                color: activeFilter === 'all' ? 'white' : 'black',
-                                border: 'none',
-                                padding: '5px 10px',
-                                borderRadius: '4px',
-                                cursor: 'pointer'
+                                marginRight: '6px',
+                                backgroundColor: activeFilter === 'all' ? '#1976d2' : '#f8fafc',
+                                color: activeFilter === 'all' ? 'white' : '#475569',
+                                border: activeFilter === 'all' ? 'none' : '1px solid #e2e8f0',
+                                padding: '7px 12px',
+                                borderRadius: '6px',
+                                cursor: 'pointer',
+                                fontWeight: '500',
+                                fontSize: '0.9rem',
+                                transition: 'all 0.2s ease',
+                                boxShadow: activeFilter === 'all' ? '0 2px 5px rgba(25, 118, 210, 0.2)' : 'none'
                             }}
                         >
                             All Leads
@@ -120,13 +143,17 @@ const PropertyLeadsTable = ({ leads }) => {
                                 setShowStrategyExplanation(true);
                             }}
                             style={{
-                                marginRight: '5px',
-                                backgroundColor: activeFilter === 'renovations' ? '#2e7d32' : '#f0f0f0',
-                                color: activeFilter === 'renovations' ? 'white' : 'black',
-                                border: 'none',
-                                padding: '5px 10px',
-                                borderRadius: '4px',
-                                cursor: 'pointer'
+                                marginRight: '6px',
+                                backgroundColor: activeFilter === 'renovations' ? '#2e7d32' : '#f8fafc',
+                                color: activeFilter === 'renovations' ? 'white' : '#475569',
+                                border: activeFilter === 'renovations' ? 'none' : '1px solid #e2e8f0',
+                                padding: '7px 12px',
+                                borderRadius: '6px',
+                                cursor: 'pointer',
+                                fontWeight: '500',
+                                fontSize: '0.9rem',
+                                transition: 'all 0.2s ease',
+                                boxShadow: activeFilter === 'renovations' ? '0 2px 5px rgba(46, 125, 50, 0.2)' : 'none'
                             }}
                         >
                             Fix & Flip
@@ -137,13 +164,17 @@ const PropertyLeadsTable = ({ leads }) => {
                                 setShowStrategyExplanation(true);
                             }}
                             style={{
-                                marginRight: '5px',
-                                backgroundColor: activeFilter === 'complaints' ? '#1976d2' : '#f0f0f0',
-                                color: activeFilter === 'complaints' ? 'white' : 'black',
-                                border: 'none',
-                                padding: '5px 10px',
-                                borderRadius: '4px',
-                                cursor: 'pointer'
+                                marginRight: '6px',
+                                backgroundColor: activeFilter === 'complaints' ? '#e53935' : '#f8fafc',
+                                color: activeFilter === 'complaints' ? 'white' : '#475569',
+                                border: activeFilter === 'complaints' ? 'none' : '1px solid #e2e8f0',
+                                padding: '7px 12px',
+                                borderRadius: '6px',
+                                cursor: 'pointer',
+                                fontWeight: '500',
+                                fontSize: '0.9rem',
+                                transition: 'all 0.2s ease',
+                                boxShadow: activeFilter === 'complaints' ? '0 2px 5px rgba(229, 57, 53, 0.2)' : 'none'
                             }}
                         >
                             Neglected
@@ -154,13 +185,17 @@ const PropertyLeadsTable = ({ leads }) => {
                                 setShowStrategyExplanation(true);
                             }}
                             style={{
-                                marginRight: '5px',
-                                backgroundColor: activeFilter === 'recent' ? '#1976d2' : '#f0f0f0',
-                                color: activeFilter === 'recent' ? 'white' : 'black',
-                                border: 'none',
-                                padding: '5px 10px',
-                                borderRadius: '4px',
-                                cursor: 'pointer'
+                                marginRight: '6px',
+                                backgroundColor: activeFilter === 'recent' ? '#0288d1' : '#f8fafc',
+                                color: activeFilter === 'recent' ? 'white' : '#475569',
+                                border: activeFilter === 'recent' ? 'none' : '1px solid #e2e8f0',
+                                padding: '7px 12px',
+                                borderRadius: '6px',
+                                cursor: 'pointer',
+                                fontWeight: '500',
+                                fontSize: '0.9rem',
+                                transition: 'all 0.2s ease',
+                                boxShadow: activeFilter === 'recent' ? '0 2px 5px rgba(2, 136, 209, 0.2)' : 'none'
                             }}
                         >
                             Recent Sales
@@ -171,13 +206,17 @@ const PropertyLeadsTable = ({ leads }) => {
                                 setShowStrategyExplanation(true);
                             }}
                             style={{
-                                marginRight: '5px',
-                                backgroundColor: activeFilter === 'high_score' ? '#9c27b0' : '#f0f0f0',
-                                color: activeFilter === 'high_score' ? 'white' : 'black',
-                                border: 'none',
-                                padding: '5px 10px',
-                                borderRadius: '4px',
-                                cursor: 'pointer'
+                                marginRight: '6px',
+                                backgroundColor: activeFilter === 'high_score' ? '#9c27b0' : '#f8fafc',
+                                color: activeFilter === 'high_score' ? 'white' : '#475569',
+                                border: activeFilter === 'high_score' ? 'none' : '1px solid #e2e8f0',
+                                padding: '7px 12px',
+                                borderRadius: '6px',
+                                cursor: 'pointer',
+                                fontWeight: '500',
+                                fontSize: '0.9rem',
+                                transition: 'all 0.2s ease',
+                                boxShadow: activeFilter === 'high_score' ? '0 2px 5px rgba(156, 39, 176, 0.2)' : 'none'
                             }}
                         >
                             High Score
@@ -185,29 +224,69 @@ const PropertyLeadsTable = ({ leads }) => {
                     </div>
                     {showStrategyExplanation && (
                         <div style={{
-                            backgroundColor: '#f8f9fa',
-                            padding: '10px 15px',
-                            borderRadius: '6px',
-                            marginTop: '10px',
-                            fontSize: '0.9rem',
-                            color: '#505050',
-                            borderLeft: '4px solid #1976d2',
-                            boxShadow: '0 2px 4px rgba(0,0,0,0.05)'
+                            backgroundColor: '#f8faff',
+                            padding: '16px 20px',
+                            borderRadius: '10px',
+                            marginTop: '16px',
+                            marginBottom: '10px',
+                            fontSize: '0.95rem',
+                            color: '#334155',
+                            borderLeft: '4px solid',
+                            borderColor: activeFilter === 'renovations' ? '#2e7d32' : 
+                                       activeFilter === 'complaints' ? '#e53935' : 
+                                       activeFilter === 'recent' ? '#0288d1' : 
+                                       activeFilter === 'high_score' ? '#9c27b0' : '#1976d2',
+                            boxShadow: '0 3px 8px rgba(0,0,0,0.06)',
+                            lineHeight: '1.5',
+                            transition: 'all 0.3s ease'
                         }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                <strong>Strategy: {activeFilter.charAt(0).toUpperCase() + activeFilter.slice(1).replace('_', ' ')}</strong>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <strong style={{ fontSize: '1rem', color: '#1e293b' }}>
+                                    Strategy: {activeFilter.charAt(0).toUpperCase() + activeFilter.slice(1).replace('_', ' ')}
+                                </strong>
                                 <button 
                                     onClick={() => setShowStrategyExplanation(false)}
-                                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#777' }}
+                                    style={{ 
+                                        background: 'none', 
+                                        border: 'none', 
+                                        cursor: 'pointer', 
+                                        color: '#64748b',
+                                        fontSize: '16px',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        width: '24px',
+                                        height: '24px',
+                                        borderRadius: '50%',
+                                        transition: 'background-color 0.2s ease'
+                                    }}
+                                    onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#f1f5f9'}
+                                    onMouseOut={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
                                 >
                                     ✕
                                 </button>
                             </div>
-                            <p style={{ margin: '5px 0 0 0' }}>{strategyExplanations[activeFilter]}</p>
+                            <p style={{ margin: '8px 0 0 0', lineHeight: '1.6' }}>{strategyExplanations[activeFilter]}</p>
                         </div>
                     )}
                     <div>
-                        <button style={{ marginRight: '5px' }}>Export CSV</button>
+                        <button style={{ 
+                            padding: '8px 16px',
+                            backgroundColor: '#f8fafc',
+                            color: '#475569',
+                            border: '1px solid #e2e8f0',
+                            borderRadius: '6px',
+                            cursor: 'pointer',
+                            fontWeight: '500',
+                            fontSize: '0.9rem',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            transition: 'all 0.2s ease',
+                            boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
+                        }}>
+                            <span style={{ fontSize: '14px' }}>↓</span> Export CSV
+                        </button>
                     </div>
                 </div>
             </div>

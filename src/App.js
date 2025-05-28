@@ -557,12 +557,7 @@ function App() {
         </div>
       )}
       {activeTab === 'explorer' && (
-        <div>
-          <h2 style={{margin: '18px 0 10px 0'}}>NYC ACRIS Explorer</h2>
-          <MapPluto
-            selectedNeighborhood={selection.neighborhood}
-            setSelectedNeighborhood={handleMapNeighborhoodSelect}
-          />
+        <div style={{marginTop: '18px'}}>
           <AcrisExplorer
             selection={selection}
             setSelection={handleDropdownSelect}

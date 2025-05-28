@@ -126,23 +126,57 @@ function AlphaNavigator() {
     }, [isLoading, leads, progress, currentAppStep]);
 
     return (
-        <div style={{ padding: '20px', backgroundColor: '#f4f6f8', minHeight: '100vh' }}>
-            <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                <h1 style={{ fontSize: '1.8em', color: '#333' }}>Alpha Navigator</h1>
-                <div style={{ fontSize: '0.9em', color: '#777' }}>Last Sync: {isLoading ? "Syncing..." : new Date().toLocaleTimeString()}</div>
-            </header>
+        <div style={{ 
+            padding: '24px', 
+            backgroundColor: '#f8fafc', 
+            minHeight: '100vh',
+            maxWidth: '1600px',
+            margin: '0 auto'
+        }}>
+            <div style={{ 
+                display: 'flex', 
+                justifyContent: 'flex-end', 
+                marginBottom: '24px'
+            }}>
+                <div style={{ 
+                    fontSize: '0.9em', 
+                    color: '#64748b',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    backgroundColor: 'white',
+                    padding: '10px 16px',
+                    borderRadius: '8px',
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.05)'
+                }}>
+                    <span style={{ color: isLoading ? '#e67e22' : '#10b981', marginRight: '4px' }}>
+                        {isLoading ? '●' : '●'}
+                    </span>
+                    Last Sync: {isLoading ? "Syncing..." : new Date().toLocaleTimeString()}
+                </div>
+            </div>
 
             {/* Summary Cards */}
-            <div style={{ display: 'flex', gap: '15px', marginBottom: '20px', flexWrap: 'wrap' }}>
+            <div style={{ 
+                display: 'flex', 
+                gap: '16px', 
+                marginBottom: '24px', 
+                flexWrap: 'wrap' 
+            }}>
                 <SummaryCard title="Likely Sellers" value={stats.likelySellers} isLoading={isLoading && currentAppStep < 4} />
                 <SummaryCard title="New Today" value={"N/A"} isLoading={isLoading && currentAppStep < 4} />
                 <SummaryCard title="Avg Score" value={typeof stats.avgScore === 'number' ? stats.avgScore.toFixed(1) : stats.avgScore} isLoading={isLoading && currentAppStep < 4} />
                 <SummaryCard title="Loans Maturing" value={stats.loansMaturing} isLoading={isLoading && currentAppStep < 4} />
             </div>
 
-            <div style={{ display: 'flex', gap: '20px' }}>
+            <div style={{ display: 'flex', gap: '24px' }}>
                 {/* Left Panel */}
-                <div style={{ flex: '0 0 320px', display: 'flex', flexDirection: 'column', gap: '15px' }}>
+                <div style={{ 
+                    flex: '0 0 320px', 
+                    display: 'flex', 
+                    flexDirection: 'column', 
+                    gap: '16px' 
+                }}>
                     <Stepper currentStep={currentAppStep} />
                     <NeighborhoodSelector
                         onSelect={handleSelectionChange}
@@ -150,9 +184,24 @@ function AlphaNavigator() {
                     />
                     <DatasetsProgress progress={progress} />
                     {error && (
-                        <div style={{ color: 'red', backgroundColor: 'white', padding: '10px', borderRadius: '4px', marginTop: '10px' }}>
-                            <strong>API Error:</strong> {error}
-                            <p style={{ marginTop: '5px', fontSize: '0.9em' }}>
+                        <div style={{ 
+                            color: '#b91c1c', 
+                            backgroundColor: '#fef2f2', 
+                            padding: '14px 16px', 
+                            borderRadius: '8px', 
+                            borderLeft: '4px solid #ef4444',
+                            boxShadow: '0 2px 6px rgba(239, 68, 68, 0.15)'
+                        }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
+                                <span style={{ fontSize: '1.2em' }}>⚠</span>
+                                <strong>API Error:</strong> 
+                            </div>
+                            <div>{error}</div>
+                            <p style={{ 
+                                marginTop: '8px', 
+                                fontSize: '0.9em',
+                                color: '#64748b'
+                            }}>
                                 The system is using simulated data for demonstration purposes.
                             </p>
                         </div>
@@ -161,28 +210,55 @@ function AlphaNavigator() {
 
                 {/* Right Panel (Map and Leads) */}
                 <div style={{ flex: 1 }}>
-                    <div style={{ marginBottom: '20px' }}>
+                    <div style={{ marginBottom: '24px' }}>
                         <button 
                             onClick={() => setShowMap(!showMap)}
                             style={{
-                                padding: '8px 15px',
-                                marginBottom: '10px',
-                                backgroundColor: showMap ? '#1976d2' : '#f0f0f0',
-                                color: showMap ? 'white' : '#333',
-                                border: 'none',
-                                borderRadius: '4px',
+                                padding: '10px 16px',
+                                marginBottom: '12px',
+                                backgroundColor: showMap ? '#1976d2' : '#f8fafc',
+                                color: showMap ? 'white' : '#475569',
+                                border: showMap ? 'none' : '1px solid #e2e8f0',
+                                borderRadius: '8px',
                                 cursor: 'pointer',
                                 display: 'flex',
                                 alignItems: 'center',
-                                gap: '5px',
-                                fontSize: '0.9rem'
+                                gap: '8px',
+                                fontSize: '0.95rem',
+                                fontWeight: '500',
+                                boxShadow: showMap ? '0 2px 5px rgba(25, 118, 210, 0.2)' : '0 1px 3px rgba(0,0,0,0.05)',
+                                transition: 'all 0.2s ease'
                             }}
                         >
-                            {showMap ? 'Hide Map' : 'Show Map'} {showMap ? '▲' : '▼'}
+                            <span style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                width: '20px',
+                                height: '20px'
+                            }}>
+                                {showMap ? (
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M4 16L12 8L20 16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                    </svg>
+                                ) : (
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M4 8L12 16L20 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                    </svg>
+                                )}
+                            </span>
+                            {showMap ? 'Hide Map' : 'Show Map'}
                         </button>
                         
                         {showMap && (
-                            <div style={{ width: '100%', height: '400px', marginBottom: '15px' }}>
+                            <div style={{ 
+                                width: '100%', 
+                                height: '400px', 
+                                marginBottom: '20px',
+                                borderRadius: '12px',
+                                overflow: 'hidden',
+                                boxShadow: '0 4px 12px rgba(0,0,0,0.08)'
+                            }}>
                                 <MapPluto
                                     selectedNeighborhood={selection.neighborhood}
                                     setSelectedNeighborhood={handleMapNeighborhoodSelect}
@@ -196,8 +272,34 @@ function AlphaNavigator() {
                         <PropertyLeadsTable leads={leads} />
                     )}
                     {selection.neighborhood === 'All Manhattan' && (
-                        <div style={{ textAlign: 'center', padding: '20px', backgroundColor: 'white', borderRadius: '8px', marginTop: '20px' }}>
-                            Please select a specific neighborhood to begin analysis.
+                        <div style={{ 
+                            textAlign: 'center', 
+                            padding: '32px 24px', 
+                            backgroundColor: 'white', 
+                            borderRadius: '12px', 
+                            marginTop: '20px',
+                            boxShadow: '0 4px 16px rgba(0,0,0,0.06)',
+                            border: '1px solid #e2e8f0',
+                            color: '#475569'
+                        }}>
+                            <div style={{ 
+                                fontSize: '4rem', 
+                                marginBottom: '16px', 
+                                color: '#cbd5e1' 
+                            }}>
+                                🏙️
+                            </div>
+                            <div style={{ 
+                                fontSize: '1.25rem', 
+                                fontWeight: '600', 
+                                marginBottom: '8px',
+                                color: '#334155'
+                            }}>
+                                Ready to Explore
+                            </div>
+                            <div>
+                                Please select a specific neighborhood from the dropdown menu or map to begin your analysis.
+                            </div>
                         </div>
                     )}
                 </div>

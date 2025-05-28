@@ -2,11 +2,12 @@
   max-width: 98vw;
   margin: 30px auto;
   font-family: 'Segoe UI', Arial, sans-serif;
-  color: #222;
-  background: #f9f9f9;
-  border-radius: 8px;
-  padding: 24px 16px 16px 16px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+  color: #333;
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 28px 20px 20px 20px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.06);
+  transition: all 0.3s ease;
 }
 
 .AcrisApp h1 {
@@ -17,29 +18,62 @@
 .Controls {
   display: flex;
   align-items: center;
-  gap: 16px;
-  margin-bottom: 14px;
+  gap: 18px;
+  margin-bottom: 18px;
+  background-color: #f7f9fc;
+  padding: 14px 16px;
+  border-radius: 8px;
 }
 
 .Controls button {
-  padding: 6px 14px;
+  padding: 8px 16px;
   background: #1976d2;
   color: white;
   border: none;
-  border-radius: 4px;
-  font-size: 1rem;
+  border-radius: 6px;
+  font-size: 0.95rem;
   cursor: pointer;
-  transition: background 0.2s;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 4px rgba(25, 118, 210, 0.15);
+  font-weight: 500;
+  letter-spacing: 0.2px;
 }
+
+.Controls button:hover {
+  background: #1565c0;
+  transform: translateY(-1px);
+  box-shadow: 0 3px 6px rgba(25, 118, 210, 0.2);
+}
+
+.Controls button:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 3px rgba(25, 118, 210, 0.2);
+}
+
 .Controls button:disabled {
-  background: #b0b0b0;
+  background: #cbd5e1;
+  color: #64748b;
   cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
 }
 
 .Controls select {
   margin-left: 6px;
-  padding: 3px 6px;
-  font-size: 1rem;
+  padding: 7px 10px;
+  font-size: 0.95rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background-color: white;
+  color: #334155;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+  transition: all 0.2s ease;
+}
+
+.Controls select:focus {
+  border-color: #3b82f6;
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(59,130,246,0.1);
 }
 
 .TableHeader {
@@ -47,14 +81,16 @@
   background: #1976d2;
   color: white;
   font-weight: 600;
-  border-radius: 4px 4px 0 0;
-  padding: 0 0 0 8px;
-  font-size: 0.96rem;
+  border-radius: 8px 8px 0 0;
+  padding: 0 0 0 12px;
+  font-size: 0.94rem;
+  letter-spacing: 0.3px;
+  box-shadow: 0 2px 4px rgba(25, 118, 210, 0.1);
 }
 
 .HeaderCell {
   flex: 1 1 120px;
-  padding: 8px 6px;
+  padding: 12px 10px;
   min-width: 100px;
   white-space: nowrap;
   overflow: hidden;
@@ -64,59 +100,109 @@
 .Row {
   display: flex;
   align-items: center;
-  padding: 0 0 0 8px;
+  padding: 0 0 0 12px;
   font-size: 0.95rem;
-  border-bottom: 1px solid #e0e0e0;
+  border-bottom: 1px solid #e8f0fe;
+  transition: background-color 0.15s ease;
 }
-.Row.Even { background: #f2f7fd; }
-.Row.Odd { background: #fff; }
+
+.Row:hover {
+  background-color: #f8faff !important;
+}
+
+.Row.Even { background: #f7faff; }
+.Row.Odd { background: #ffffff; }
 
 .Cell {
   flex: 1 1 120px;
-  padding: 6px 6px;
+  padding: 10px 10px;
   min-width: 100px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  color: #374151;
 }
 
 .Status {
-  margin: 14px 0;
+  margin: 16px 0;
   color: #1976d2;
   font-weight: 500;
-}
-.Status.Error {
-  color: #c62828;
+  background-color: #f0f7ff;
+  padding: 12px 16px;
+  border-radius: 8px;
+  border-left: 4px solid #1976d2;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.04);
 }
 
+.Status.Error {
+  color: #c62828;
+  background-color: #fff0f0;
+  border-left: 4px solid #c62828;
+}
+
+/* Modern Tab Bar Styling */
 .TabBar {
   display: flex;
   gap: 0;
   background: #fff;
-  border-radius: 10px 10px 0 0;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.07);
-  margin-bottom: 18px;
+  border-radius: 12px 12px 0 0;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+  margin-bottom: 24px;
   overflow: hidden;
+  position: relative;
 }
+
 .Tab {
   flex: 1 1 0;
   text-align: center;
-  padding: 16px 0 13px 0;
-  font-size: 1.12rem;
-  font-weight: 500;
-  color: #1976d2;
-  background: #f7fafd;
+  padding: 18px 0 16px 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #64748b;
+  background: #f8fafc;
   cursor: pointer;
-  border-bottom: 2px solid transparent;
-  transition: background 0.18s, color 0.18s, border-bottom 0.18s;
+  border-bottom: 3px solid transparent;
+  transition: all 0.25s ease;
+  letter-spacing: 0.3px;
+  position: relative;
+  z-index: 1;
 }
+
 .Tab:not(.active):hover {
-  background: #e3ecf8;
+  background: #eff6ff;
+  color: #3b82f6;
 }
+
 .Tab.active {
   color: #fff;
   background: #1976d2;
-  border-bottom: 2px solid #1565c0;
-  box-shadow: 0 2px 8px rgba(25,118,210,0.08);
-  z-index: 1;
+  border-bottom: 3px solid #1565c0;
+  box-shadow: 0 4px 12px rgba(25,118,210,0.12);
+  z-index: 2;
+}
+
+/* Add some additional global styles */
+body {
+  background-color: #f8fafc;
+  margin: 0;
+  padding: 0;
+  font-family: 'Segoe UI', Arial, sans-serif;
+}
+
+h1, h2, h3, h4 {
+  color: #334155;
+  margin-top: 0;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .Tab {
+    padding: 14px 0 12px 0;
+    font-size: 1rem;
+  }
+  
+  .Controls {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }
