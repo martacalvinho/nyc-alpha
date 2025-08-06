@@ -8,7 +8,7 @@ import { usePropertyProcessor } from './hooks/usePropertyProcessor';
 
 // Modern stepper component for navigation
 const Stepper = ({ currentStep }) => {
-    const steps = ["Select", "Map", "Load", "Analyze"];
+    const steps = ["Select", "Load", "Analyze"];
     return (
         <div style={{ 
             display: 'flex', 
@@ -85,13 +85,14 @@ const Stepper = ({ currentStep }) => {
 };
 
 function AlphaNavigator() {
-    const [currentAppStep, setCurrentAppStep] = useState(1); // 1: Select, 2: Map, 3: Load, 4: Analyze
+    const [currentAppStep, setCurrentAppStep] = useState(1); // 1: Select, 2: Load, 3: Analyze
     const [selection, setSelection] = useState({ 
         borough: 'manhattan', 
         neighborhood: 'All Manhattan',
         ntaCode: '' // Add NTA code to the selection state
     });
-    const [showMap, setShowMap] = useState(false); // Map is hidden by default
+    // Track when we entered the Load step so we don't immediately skip past it
+    const [enteredLoadAt, setEnteredLoadAt] = useState(0);
 
     // Use our property processor hook
     const { leads, isLoading, error, stats, progress, refreshData } = usePropertyProcessor(
@@ -104,7 +105,9 @@ function AlphaNavigator() {
         console.log('Selection changed:', newSelection);
         setSelection(newSelection);
         if (newSelection.neighborhood && newSelection.neighborhood !== 'All Manhattan') {
-            setCurrentAppStep(3); // Move to Load step, processor hook will auto-fetch
+            // Go directly to Load step; map will be visible during load
+            setCurrentAppStep(2);
+            setEnteredLoadAt(Date.now());
         } else {
             setCurrentAppStep(1); // Back to select if "All Manhattan"
         }
@@ -122,16 +125,25 @@ function AlphaNavigator() {
                 neighborhood: ntaName,
                 ntaCode: '' // We'd need a lookup table to get the proper NTA code from the name
             }));
-            setCurrentAppStep(3);
+            // Stay on Load step (map visible) to show the highlight
+            setCurrentAppStep(2);
+            setEnteredLoadAt(Date.now());
         }
     }, []);
 
     // Move to Analyze step when loading is done and data is present
     useEffect(() => {
-        if (currentAppStep === 3 && !isLoading && (leads.length > 0 || progress.analysis === 'complete')) {
-            setCurrentAppStep(4);
+        if (currentAppStep === 2 && !isLoading && leads.length > 0) {
+            const dwellMs = 900; // keep Load visible for a brief moment so map initializes
+            const elapsed = Date.now() - enteredLoadAt;
+            if (elapsed >= dwellMs) {
+                setCurrentAppStep(3);
+            } else {
+                const timeout = setTimeout(() => setCurrentAppStep(3), dwellMs - elapsed);
+                return () => clearTimeout(timeout);
+            }
         }
-    }, [isLoading, leads, progress, currentAppStep]);
+    }, [isLoading, leads, currentAppStep, enteredLoadAt]);
 
     return (
         <div style={{ 
@@ -171,10 +183,10 @@ function AlphaNavigator() {
                 marginBottom: '24px', 
                 flexWrap: 'wrap' 
             }}>
-                <SummaryCard title="Likely Sellers" value={stats.likelySellers} isLoading={isLoading && currentAppStep < 4} />
-                <SummaryCard title="New Today" value={"N/A"} isLoading={isLoading && currentAppStep < 4} />
-                <SummaryCard title="Avg Score" value={typeof stats.avgScore === 'number' ? stats.avgScore.toFixed(1) : stats.avgScore} isLoading={isLoading && currentAppStep < 4} />
-                <SummaryCard title="Loans Maturing" value={stats.loansMaturing} isLoading={isLoading && currentAppStep < 4} />
+                <SummaryCard title="Likely Sellers" value={stats.likelySellers} isLoading={isLoading && currentAppStep < 3} />
+                <SummaryCard title="New Today" value={"N/A"} isLoading={isLoading && currentAppStep < 3} />
+                <SummaryCard title="Avg Score" value={typeof stats.avgScore === 'number' ? stats.avgScore.toFixed(1) : stats.avgScore} isLoading={isLoading && currentAppStep < 3} />
+                <SummaryCard title="Loans Maturing" value={stats.loansMaturing} isLoading={isLoading && currentAppStep < 3} />
             </div>
 
             <div style={{ display: 'flex', gap: '24px' }}>
@@ -219,51 +231,12 @@ function AlphaNavigator() {
                 {/* Right Panel (Map and Leads) */}
                 <div style={{ flex: 1 }}>
                     <div style={{ marginBottom: '24px' }}>
-                        <button 
-                            onClick={() => setShowMap(!showMap)}
-                            style={{
-                                padding: '10px 16px',
-                                marginBottom: '12px',
-                                backgroundColor: showMap ? '#1976d2' : '#f8fafc',
-                                color: showMap ? 'white' : '#475569',
-                                border: showMap ? 'none' : '1px solid #e2e8f0',
-                                borderRadius: '8px',
-                                cursor: 'pointer',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '8px',
-                                fontSize: '0.95rem',
-                                fontWeight: '500',
-                                boxShadow: showMap ? '0 2px 5px rgba(25, 118, 210, 0.2)' : '0 1px 3px rgba(0,0,0,0.05)',
-                                transition: 'all 0.2s ease'
-                            }}
-                        >
-                            <span style={{
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                width: '20px',
-                                height: '20px'
-                            }}>
-                                {showMap ? (
-                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                        <path d="M4 16L12 8L20 16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                                    </svg>
-                                ) : (
-                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                        <path d="M4 8L12 16L20 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                                    </svg>
-                                )}
-                            </span>
-                            {showMap ? 'Hide Map' : 'Show Map'}
-                        </button>
-                        
-                        {showMap && (
+                        {currentAppStep <= 2 && (
                             <div style={{ 
                                 width: '100%', 
                                 height: '400px', 
                                 marginBottom: '20px',
-                                borderRadius: '12px',
+                                borderRadius: '12px', 
                                 overflow: 'hidden',
                                 boxShadow: '0 4px 12px rgba(0,0,0,0.08)'
                             }}>
@@ -275,8 +248,8 @@ function AlphaNavigator() {
                         )}
                     </div>
                     
-                    {/* Always show the property leads table when on the analyze step */}
-                    {currentAppStep === 4 && selection.neighborhood !== 'All Manhattan' && (
+                    {/* Show the property leads table when on the analyze step */}
+                    {currentAppStep === 3 && selection.neighborhood !== 'All Manhattan' && (
                         <PropertyLeadsTable leads={leads} />
                     )}
                     {selection.neighborhood === 'All Manhattan' && (
