@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
+import { lookupNtaCd } from '../data/neighborhoods';
 
 // --- API Endpoints (NYC Open Data) ---
 // Using the most recent MapPLUTO dataset
@@ -16,6 +17,25 @@ function makeBBL(boroughCode, block, lot) {
     if (!boroughCode || !block || !lot || String(boroughCode).length !== 1) return null;
     return String(boroughCode) + String(block).padStart(5, '0') + String(lot).padStart(4, '0');
 }
+
+// Normalize any incoming BBL-ish value to a 10-digit string (no decimals)
+function normalizeBBLString(value) {
+    if (!value) return null;
+    // If we already have borough+block+lot, return as-is when 10 digits
+    const digits = String(value).replace(/[^0-9]/g, '');
+    if (digits.length >= 10) return digits.slice(0, 10);
+    return null;
+}
+
+// Map borough text to numeric code and vice versa
+const boroughTextToNumeric = {
+    'MANHATTAN': '1',
+    'BRONX': '2',
+    'BROOKLYN': '3',
+    'QUEENS': '4',
+    'STATEN ISLAND': '5'
+};
+const plutoBoroughToNumeric = { MN: '1', BX: '2', BK: '3', QN: '4', SI: '5' };
 
 // Calculate months difference (past dates = positive number, future dates = negative number)
 const timeDiffInMonths = (dateStr, from = new Date()) => {
@@ -94,31 +114,40 @@ export function usePropertyProcessor(selectedBorough, selection) {
             };
             const boroughCode = boroughCodes[selectedBorough.toLowerCase()];
             
-            // Get data for the specific neighborhood when possible
-            const plutoParams = {
-                borough: boroughCode,
-                $limit: 5000 // Get more data to increase chances of matches
-            };
-            
-            // Add NTA filter if a specific neighborhood is selected
-            if (selectedNTACode) {
-                // Let's not use direct field filtering since we're not sure of the exact field name
-                // Instead, use the borough filter to get all properties in the borough
-                // We'll filter by NTA code client-side after fetching the data
-                console.log(`Will filter client-side for NTA code: ${selectedNTACode}`);
+            // Build server-side filters where possible and paginate to fetch ALL rows
+            // Known fields: borough (e.g., 'MN'), cd (e.g., '107', '108'), bbl
+            const whereClauses = [`borough='${boroughCode}'`];
+            // Apply CD from neighborhood mapping if available
+            const mapped = lookupNtaCd(selectedNeighborhood);
+            if (mapped?.cd) {
+                whereClauses.push(`cd='${mapped.cd}'`);
+            } else if (selectedNTACode) {
+                // Unknown mapping for provided NTA; proceed without server-side NTA filter
+                console.log(`No CD mapping for neighborhood ${selectedNeighborhood} (NTA ${selectedNTACode}); will filter client-side if needed.`);
             } else if (selectedNeighborhood && selectedNeighborhood !== 'All Manhattan') {
-                // For neighborhood name, same approach - just get borough data and filter after
-                console.log(`Will filter client-side for neighborhood: ${selectedNeighborhood}`);
+                console.log(`No NTA/CD mapping for neighborhood: ${selectedNeighborhood}; will filter client-side if needed.`);
             }
-            
-            console.log('Using PLUTO params:', plutoParams);
-            console.log('Fetching PLUTO data for:', selectedNeighborhood);
-            console.log('Fetching PLUTO data with URL:', PLUTO_ENDPOINT);
+
+            const whereClause = whereClauses.join(' AND ');
+            const PAGE_LIMIT = 50000; // Socrata allows up to 50k per page
             let plutoDataRaw = [];
+            let page = 0;
+            let offset = 0;
+            console.log('Fetching PLUTO with server-side where:', whereClause || '(none)');
             try {
-                const plutoRes = await axios.get(PLUTO_ENDPOINT, { params: plutoParams });
-                plutoDataRaw = plutoRes.data;
-                console.log('PLUTO data received:', plutoDataRaw.length, 'records');
+                while (true) {
+                    const params = { $limit: PAGE_LIMIT, $offset: offset };
+                    if (whereClause) params.$where = whereClause;
+                    const res = await axios.get(PLUTO_ENDPOINT, { params });
+                    const rows = res.data || [];
+                    plutoDataRaw = plutoDataRaw.concat(rows);
+                    console.log(`PLUTO page ${++page}: received ${rows.length} rows (total: ${plutoDataRaw.length})`);
+                    if (rows.length < PAGE_LIMIT) break; // last page reached
+                    offset += PAGE_LIMIT;
+                    // Small delay to be nice to the API
+                    await new Promise(r => setTimeout(r, 100));
+                }
+                console.log('PLUTO data received total:', plutoDataRaw.length, 'records');
                 
                 // Debug the PLUTO data structure
                 if (plutoDataRaw.length > 0) {
@@ -126,7 +155,7 @@ export function usePropertyProcessor(selectedBorough, selection) {
                     console.log('Sample PLUTO record:', plutoDataRaw[0]);
                 }
                 
-                // If we have NTA code or neighborhood, filter the data client-side
+                // If we have NTA code or neighborhood and could not filter server-side, filter the data client-side
                 if (selectedNTACode && plutoDataRaw.length > 0) {
                     console.log(`Filtering ${plutoDataRaw.length} properties by NTA code: ${selectedNTACode}`);
                     
@@ -185,7 +214,7 @@ export function usePropertyProcessor(selectedBorough, selection) {
                 
                 // If we didn't get any data, log the issue
                 if (plutoDataRaw.length === 0) {
-                    console.log('No PLUTO data received for params:', plutoParams);
+                    console.log('No PLUTO data received for where:', whereClause);
                 }
             } catch (err) {
                 console.error('PLUTO API error:', err.message);
@@ -210,24 +239,36 @@ export function usePropertyProcessor(selectedBorough, selection) {
             console.log('First 3 PLUTO records for inspection:', plutoDataRaw.slice(0, 3));
                         
             plutoDataRaw.forEach(p => {
-                // Ensure BBL is valid
+                // Derive a normalized 10-digit BBL
+                let bblNorm = null;
                 if (p.bbl) {
-                    properties[p.bbl] = {
-                        bbl: p.bbl,
-                        plutoData: p,
-                        address: p.address, // Assuming 'address' field exists in your PLUTO data
-                        ntaname: p.ntaname,
-                        lastSaleDate: null,
-                        tenureMonths: 0,
-                        score: 2.0, // Base score
-                        // Placeholders for other metrics
-                        permitsLast12Months: 0,
-                        complaintsLast30Days: 0,
-                        unusedFARPercentage: 0,
-                        loanMaturityDate: null,
-                        daysToLoanMaturity: Infinity,
-                    };
+                    bblNorm = normalizeBBLString(p.bbl);
                 }
+                if (!bblNorm) {
+                    // Try to build from borough/block/lot when available
+                    const boro = (p.borough || p.BOROUGH || '').toString().toUpperCase();
+                    const boroNum = plutoBoroughToNumeric[boro] || (p.bbl ? p.bbl[0] : null);
+                    const block = p.block || p.BLOCK;
+                    const lot = p.lot || p.LOT;
+                    if (boroNum && block && lot) bblNorm = makeBBL(boroNum, block, lot);
+                }
+                if (!bblNorm) return; // skip if we cannot normalize
+
+                properties[bblNorm] = {
+                    bbl: bblNorm,
+                    plutoData: p,
+                    address: p.address, // Assuming 'address' field exists in your PLUTO data
+                    ntaname: p.ntaname,
+                    lastSaleDate: null,
+                    tenureMonths: 0,
+                    score: 2.0, // Base score
+                    // Placeholders for other metrics
+                    permitsLast12Months: 0,
+                    complaintsLast30Days: 0,
+                    unusedFARPercentage: 0,
+                    loanMaturityDate: null,
+                    daysToLoanMaturity: Infinity,
+                };
             });
 
             if (Object.keys(properties).length === 0) {
@@ -278,8 +319,9 @@ export function usePropertyProcessor(selectedBorough, selection) {
                     // Create BBL components for ACRIS query ($where needs borough, block, lot)
                     const bblQueryParts = batch.map(bbl => {
                         const borough = bbl.substring(0, 1);
-                        const block = parseInt(bbl.substring(1, 6), 10);
-                        const lot = parseInt(bbl.substring(6, 10), 10);
+                        const block = parseInt(bbl.substring(1, 6), 10).toString();
+                        const lot = parseInt(bbl.substring(6, 10), 10).toString();
+                        // ACRIS Legals stores borough/block/lot as text; use string comparisons
                         return `(borough='${borough}' AND block='${block}' AND lot='${lot}')`;
                     });
                     
@@ -348,9 +390,8 @@ export function usePropertyProcessor(selectedBorough, selection) {
                         console.log(`Fetching ACRIS Master batch ${batchIndex + 1}/${docIdBatches.length}`);
                         const masterRes = await axios.get(MASTER_ENDPOINT, {
                             params: {
-                                $where: docIdQueryString,
-                                $limit: 100 * batch.length,
-                                doc_type: 'DEED' // Focus on actual sales
+                                $where: `(${docIdQueryString}) AND doc_type='DEED'`,
+                                $limit: 100 * batch.length
                             }
                         });
                         
@@ -461,24 +502,31 @@ export function usePropertyProcessor(selectedBorough, selection) {
             const bblToForeclosuresMap = {};
             
             mortgageRecords.forEach(record => {
-                if (!record.bbl) return; // Skip if no BBL
-                
-                const normalizedBBL = record.bbl.replace(/-/g, ''); // Remove dashes if present
-                
-                // Check if it's a mortgage or a foreclosure notice
-                if (record.doc_type && (record.doc_type.includes('MORTGAGE') || record.doc_type.includes('MTG'))) {
-                    // It's a mortgage
-                    if (!bblToMortgagesMap[normalizedBBL]) {
-                        bblToMortgagesMap[normalizedBBL] = [];
-                    }
-                    bblToMortgagesMap[normalizedBBL].push(record);
-                } else if (record.doc_type && (record.doc_type === 'LIS PENDENS' || record.doc_type === 'NOTICE OF PENDENCY')) {
-                    // It's a foreclosure notice
-                    if (!bblToForeclosuresMap[normalizedBBL]) {
-                        bblToForeclosuresMap[normalizedBBL] = [];
-                    }
-                    bblToForeclosuresMap[normalizedBBL].push(record);
+                // Determine candidate BBLs for this record
+                let candidateBBLs = [];
+                if (record.bbl) {
+                    const normalized = normalizeBBLString(record.bbl);
+                    if (normalized) candidateBBLs.push(normalized);
+                } else if (record.document_id && docIdToBblMap[record.document_id]) {
+                    candidateBBLs = [...docIdToBblMap[record.document_id]];
                 }
+
+                if (candidateBBLs.length === 0) return; // No way to map
+
+                // Classify and store by BBL
+                candidateBBLs.forEach(normalizedBBL => {
+                    if (record.doc_type && (record.doc_type.includes('MORTGAGE') || record.doc_type.includes('MTG'))) {
+                        if (!bblToMortgagesMap[normalizedBBL]) {
+                            bblToMortgagesMap[normalizedBBL] = [];
+                        }
+                        bblToMortgagesMap[normalizedBBL].push(record);
+                    } else if (record.doc_type && (record.doc_type === 'LIS PENDENS' || record.doc_type === 'NOTICE OF PENDENCY')) {
+                        if (!bblToForeclosuresMap[normalizedBBL]) {
+                            bblToForeclosuresMap[normalizedBBL] = [];
+                        }
+                        bblToForeclosuresMap[normalizedBBL].push(record);
+                    }
+                });
             });
             
             // Now match mortgages and foreclosures to properties
@@ -528,41 +576,28 @@ export function usePropertyProcessor(selectedBorough, selection) {
                 console.log('Fetching DOB Jobs for target BBLs');
                 let allDobJobs = [];
                 
-                // Use the same BBL batches to query DOB jobs
-                for (let batchIndex = 0; batchIndex < bblBatches.length; batchIndex++) {
-                    const batch = bblBatches[batchIndex];
-                    
-                    // Convert BBLs to DOB format (which uses text borough, block, lot)
-                    const boroughMap = { '1': 'MANHATTAN', '2': 'BRONX', '3': 'BROOKLYN', '4': 'QUEENS', '5': 'STATEN ISLAND' };
-                    
-                    const dobQueryParts = batch.map(bbl => {
-                        const boroughCode = bbl.substring(0, 1);
-                        const boroughText = boroughMap[boroughCode];
-                        const block = parseInt(bbl.substring(1, 6), 10).toString();
-                        const lot = parseInt(bbl.substring(6, 10), 10).toString();
-                        return `(borough='${boroughText}' AND block='${block}' AND lot='${lot}')`;
-                    });
-                    
-                    const dobQueryString = dobQueryParts.join(' OR ');
-                    
+                // Build block-based queries to reduce OR complexity
+                const bblList = Object.keys(properties);
+                const blocks = Array.from(new Set(bblList.map(b => parseInt(b.substring(1, 6), 10).toString())));
+                const BLOCK_BATCH_SIZE = 30; // keep query short
+                for (let i = 0; i < blocks.length; i += BLOCK_BATCH_SIZE) {
+                    const blockBatch = blocks.slice(i, i + BLOCK_BATCH_SIZE);
+                    const boroughText = Object.keys(boroughTextToNumeric).find(k => boroughTextToNumeric[k] === acrisBoroughCode) || 'MANHATTAN';
+                    const where = `borough='${boroughText}' AND block IN(${blockBatch.map(b => `'${b}'`).join(',')})`;
                     try {
-                        console.log(`Fetching DOB Jobs batch ${batchIndex + 1}/${bblBatches.length}`);
+                        console.log(`Fetching DOB Jobs blocks ${i + 1}-${Math.min(i + BLOCK_BATCH_SIZE, blocks.length)}/${blocks.length}`);
                         const dobJobsRes = await axios.get(DOBJOBS_ENDPOINT, {
                             params: {
-                                $where: dobQueryString,
-                                $limit: 50 * batch.length
+                                $where: where,
+                                $limit: 5000
                             }
                         });
-                        
                         allDobJobs = [...allDobJobs, ...dobJobsRes.data];
-                        console.log(`Batch ${batchIndex + 1}: Got ${dobJobsRes.data.length} DOB Jobs`);
-                        
-                        // Add a small delay between batches
-                        if (batchIndex < bblBatches.length - 1) {
-                            await new Promise(resolve => setTimeout(resolve, 100));
-                        }
                     } catch (err) {
-                        console.error(`Error fetching DOB Jobs batch ${batchIndex + 1}:`, err.message);
+                        console.error(`Error fetching DOB Jobs blocks batch ${i / BLOCK_BATCH_SIZE + 1}:`, err.message);
+                    }
+                    if (i + BLOCK_BATCH_SIZE < blocks.length) {
+                        await new Promise(resolve => setTimeout(resolve, 100));
                     }
                 }
                 
@@ -574,13 +609,7 @@ export function usePropertyProcessor(selectedBorough, selection) {
                 
                 // Match DOB jobs to properties
                 // Map DOB borough text names to numeric codes
-                const dobBoroughToNumeric = {
-                    'MANHATTAN': '1',
-                    'BRONX': '2',
-                    'BROOKLYN': '3',
-                    'QUEENS': '4',
-                    'STATEN ISLAND': '5'
-                };
+                const dobBoroughToNumeric = boroughTextToNumeric;
                 
                 let dobJobsMatched = 0;
                 dobJobs.forEach(job => {
@@ -588,22 +617,25 @@ export function usePropertyProcessor(selectedBorough, selection) {
                     if (job.block && job.lot && job.borough) {
                         // Convert text borough to numeric code
                         const numericJobBorough = dobBoroughToNumeric[job.borough.toUpperCase()];
-                        
                         if (numericJobBorough) {
                             const jobBbl = makeBBL(numericJobBorough, job.block, job.lot);
                             if (jobBbl && properties[jobBbl]) {
-                                // If we have jobs.length property, use it, otherwise init to 1
                                 properties[jobBbl].dobJobs = properties[jobBbl].dobJobs || [];
                                 properties[jobBbl].dobJobs.push(job);
                                 dobJobsMatched++;
                             }
                         }
+                    } else if (job.bbl) {
+                        const norm = normalizeBBLString(job.bbl);
+                        if (norm && properties[norm]) {
+                            properties[norm].dobJobs = properties[norm].dobJobs || [];
+                            properties[norm].dobJobs.push(job);
+                            dobJobsMatched++;
+                        }
                     }
                 });
-                
                 console.log(`DOB Jobs matched to properties: ${dobJobsMatched}`);
-                
-                setProgress(p => ({ ...p, dob: `${dobJobs.length} records processed` }));
+                setProgress(p => ({ ...p, dob: `${dobJobs.length} records processed, ${dobJobsMatched} matched` }));
             } catch (err) {
                 console.error('Error fetching DOB Jobs:', err.message);
                 setProgress(p => ({ ...p, dob: `Error: ${err.message}` }));
@@ -616,32 +648,50 @@ export function usePropertyProcessor(selectedBorough, selection) {
                 console.log('Fetching 311 complaints for target BBLs');
                 let all311Complaints = [];
                 
-                // Use the same BBL batches to query 311 complaints
-                for (let batchIndex = 0; batchIndex < bblBatches.length; batchIndex++) {
-                    const batch = bblBatches[batchIndex];
-                    
-                    // 311 dataset has direct BBL field we can use
-                    const bblQueryParts = batch.map(bbl => `bbl='${bbl}'`);
-                    const bblQueryString = bblQueryParts.join(' OR ');
-                    
+                // Use BBL IN(...) batches
+                const targetBBLsArr = Object.keys(properties);
+                const BBL_BATCH_SIZE = 20;
+                for (let i = 0; i < targetBBLsArr.length; i += BBL_BATCH_SIZE) {
+                    const batch = targetBBLsArr.slice(i, i + BBL_BATCH_SIZE);
+                    const where = `bbl IN(${batch.map(b => `'${b}'`).join(',')})`;
                     try {
-                        console.log(`Fetching 311 complaints batch ${batchIndex + 1}/${bblBatches.length}`);
                         const threeoneoneRes = await axios.get(THREEONEONE_ENDPOINT, {
                             params: {
-                                $where: bblQueryString,
-                                $limit: 50 * batch.length
+                                $where: where,
+                                $limit: 5000
                             }
                         });
-                        
                         all311Complaints = [...all311Complaints, ...threeoneoneRes.data];
-                        console.log(`Batch ${batchIndex + 1}: Got ${threeoneoneRes.data.length} 311 complaints`);
-                        
-                        // Add a small delay between batches
-                        if (batchIndex < bblBatches.length - 1) {
+                    } catch (err) {
+                        console.error(`Error fetching 311 complaints batch ${i / BBL_BATCH_SIZE + 1}:`, err.message);
+                    }
+                    if (i + BBL_BATCH_SIZE < targetBBLsArr.length) {
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                    }
+                }
+                
+                // Fallback: if BBL-based fetch is empty, try by address
+                if (all311Complaints.length === 0) {
+                    const boroughText311 = Object.keys(boroughTextToNumeric).find(k => boroughTextToNumeric[k] === acrisBoroughCode) || 'MANHATTAN';
+                    const addresses = Array.from(new Set(Object.values(properties)
+                        .map(p => (p.address || '').toString().trim().toUpperCase())
+                        .filter(a => a.length > 0)));
+                    const ADDR_BATCH_SIZE = 20;
+                    for (let i = 0; i < addresses.length; i += ADDR_BATCH_SIZE) {
+                        const batch = addresses.slice(i, i + ADDR_BATCH_SIZE);
+                        const safeList = batch.map(a => `'${a.replace(/'/g, "''")}'`).join(',');
+                        const where = `borough='${boroughText311}' AND incident_address IN(${safeList})`;
+                        try {
+                            const res = await axios.get(THREEONEONE_ENDPOINT, {
+                                params: { $where: where, $limit: 5000 }
+                            });
+                            all311Complaints = [...all311Complaints, ...res.data];
+                        } catch (err) {
+                            console.error(`Error fetching 311 by address batch ${i / ADDR_BATCH_SIZE + 1}:`, err.message);
+                        }
+                        if (i + ADDR_BATCH_SIZE < addresses.length) {
                             await new Promise(resolve => setTimeout(resolve, 100));
                         }
-                    } catch (err) {
-                        console.error(`Error fetching 311 complaints batch ${batchIndex + 1}:`, err.message);
                     }
                 }
                 
