@@ -16,7 +16,9 @@
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
-    "eject": "react-scripts eject"
+    "eject": "react-scripts eject",
+    "cache:all": "node scripts/build-cache.js --borough=manhattan",
+    "cache:nta": "node scripts/build-cache.js --borough=manhattan --nta=$NTA"
   },
   "eslintConfig": {
     "extends": [

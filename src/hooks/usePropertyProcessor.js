@@ -1,13 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { lookupNtaCd } from '../data/neighborhoods';
+import { boroughSlug } from '../data/ntaList';
 
 // --- API Endpoints (NYC Open Data) ---
 // Using the most recent MapPLUTO dataset
 const PLUTO_ENDPOINT = 'https://data.cityofnewyork.us/resource/64uk-42ks.json'; // MapPLUTO
 const LEGALS_ENDPOINT = 'https://data.cityofnewyork.us/resource/8h5j-fqxa.json'; // ACRIS Legals
 const MASTER_ENDPOINT = 'https://data.cityofnewyork.us/resource/bnx9-e6tj.json'; // ACRIS Master
-const MORTGAGE_ENDPOINT = 'https://data.cityofnewyork.us/resource/qjp4-ri2f.json'; // ACRIS Mortgages
 const DOBJOBS_ENDPOINT = 'https://data.cityofnewyork.us/resource/hir8-3a8d.json'; // DOB Jobs
 const THREEONEONE_ENDPOINT = 'https://data.cityofnewyork.us/resource/erm2-nwe9.json'; // 311 Complaints
 
@@ -16,6 +16,76 @@ function makeBBL(boroughCode, block, lot) {
     // Assumes boroughCode is already '1' for Manhattan, '2' for Bronx etc.
     if (!boroughCode || !block || !lot || String(boroughCode).length !== 1) return null;
     return String(boroughCode) + String(block).padStart(5, '0') + String(lot).padStart(4, '0');
+}
+
+// If a property's address lacks a leading house number, try deriving one from DOB jobs or 311
+function ensureDisplayAddressWithNumber(prop) {
+    const hasNumber = prop.address && /^\d/.test(String(prop.address).trim());
+    if (hasNumber) return;
+    // Try PLUTO parts first
+    const ph = prop.plutoData?.housenum || prop.plutoData?.housenumber;
+    const ps = prop.plutoData?.stname || prop.plutoData?.street;
+    if (ph && ps) {
+        prop.address = `${String(ph).trim()} ${String(ps).trim()}`;
+        return;
+    }
+    // Try DOB jobs
+    if (prop.dobJobs && prop.dobJobs.length) {
+        const counts = {};
+        const unitCounts = {};
+        prop.dobJobs.forEach(j => {
+            const h = j.house__ || j.house || j.houseno || j.house_number;
+            const s = j.street_name || j.streetname || j.street;
+            const key = normalizeAddressParts(h, s);
+            if (key) {
+                counts[key] = (counts[key] || 0) + 1;
+                const unit = extractUnitFromJob(j);
+                if (unit) {
+                    if (!unitCounts[key]) unitCounts[key] = {};
+                    unitCounts[key][unit] = (unitCounts[key][unit] || 0) + 1;
+                }
+            }
+        });
+        const best = Object.entries(counts).sort((a,b)=>b[1]-a[1])[0];
+        if (best && best[0]) {
+            const base = best[0];
+            // If there is a dominant unit for this base address, append it
+            const uc = unitCounts[base] || {};
+            const topUnit = Object.entries(uc).sort((a,b)=>b[1]-a[1])[0];
+            prop.address = topUnit && topUnit[0] ? `${base}, Apt ${topUnit[0]}` : base;
+            return;
+        }
+    }
+    // Try 311 complaints
+    if (prop.complaints && prop.complaints.length) {
+        const counts = {};
+        prop.complaints.forEach(c => {
+            const { house, street } = parseHouseAndStreet(c.incident_address);
+            const key = normalizeAddressParts(house, street);
+            if (key) counts[key] = (counts[key] || 0) + 1;
+        });
+        const best = Object.entries(counts).sort((a,b)=>b[1]-a[1])[0];
+        if (best && best[0]) {
+            prop.address = best[0];
+            return;
+        }
+    }
+}
+
+// Parse a freeform address into {house, street} and drop unit/apt parts
+function parseHouseAndStreet(addr) {
+    if (!addr) return { house: null, street: null };
+    let s = String(addr).toUpperCase().trim();
+    // Remove commas
+    s = s.replace(/,/g, ' ');
+    // Strip common unit markers and everything after them
+    s = s.replace(/\s+(APT|APARTMENT|UNIT|STE|SUITE|FL|FLOOR|#)\b.*$/i, '');
+    // House number is the first token with digits
+    const m = s.match(/^(\d+[A-Z]?)\s+(.+)$/i);
+    if (!m) return { house: null, street: s };
+    const house = m[1];
+    const street = m[2];
+    return { house, street };
 }
 
 // Normalize any incoming BBL-ish value to a 10-digit string (no decimals)
@@ -27,15 +97,90 @@ function normalizeBBLString(value) {
     return null;
 }
 
-// Map borough text to numeric code and vice versa
+// Map borough text to numeric code (includes common synonyms)
 const boroughTextToNumeric = {
     'MANHATTAN': '1',
+    'MN': '1',
+    'NY': '1',
     'BRONX': '2',
+    'BX': '2',
+    'BRX': '2',
     'BROOKLYN': '3',
+    'BKLYN': '3',
+    'BK': '3',
+    'KINGS': '3',
     'QUEENS': '4',
-    'STATEN ISLAND': '5'
+    'QNS': '4',
+    'STATEN ISLAND': '5',
+    'STATEN IS': '5',
+    'SI': '5',
+    'RICHMOND': '5'
 };
 const plutoBoroughToNumeric = { MN: '1', BX: '2', BK: '3', QN: '4', SI: '5' };
+
+// Address normalization helpers for matching DOB jobs by street_name
+function normalizeStreetName(s) {
+    if (!s) return null;
+    let t = String(s).toUpperCase();
+    t = t.replace(/[\.,]/g, ' ');
+    t = t.replace(/\bAVENUE\b/g, 'AVE');
+    t = t.replace(/\bSTREET\b/g, 'ST');
+    t = t.replace(/\bBOULEVARD\b/g, 'BLVD');
+    t = t.replace(/\bPLACE\b/g, 'PL');
+    t = t.replace(/\bROAD\b/g, 'RD');
+    t = t.replace(/\bDRIVE\b/g, 'DR');
+    t = t.replace(/\bPARKWAY\b/g, 'PKWY');
+    t = t.replace(/\bTERRACE\b/g, 'TER');
+    t = t.replace(/\bLANE\b/g, 'LN');
+    t = t.replace(/\bCOURT\b/g, 'CT');
+    t = t.replace(/\bEAST\b/g, 'E');
+    t = t.replace(/\bWEST\b/g, 'W');
+    t = t.replace(/\bNORTH\b/g, 'N');
+    t = t.replace(/\bSOUTH\b/g, 'S');
+    t = t.replace(/\s+/g, ' ').trim();
+    return t;
+}
+function normalizeHouseNumber(s) {
+    if (!s && s !== 0) return null;
+    const t = String(s).toUpperCase().replace(/[^0-9A-Z]/g, '');
+    return t || null;
+}
+function normalizeAddressParts(house, street) {
+    const h = normalizeHouseNumber(house);
+    const st = normalizeStreetName(street);
+    if (!h || !st) return null;
+    return `${h} ${st}`;
+}
+
+// Extract apartment/unit from DOB job record (supports multiple possible field names)
+function extractUnitFromJob(job) {
+    const cand = job.apartment || job.apartment__ || job.apt || job.apt__ || job.apt_no || job.unit || job.unit__ || job.apartment_number || job.aptnum || null;
+    if (!cand) return null;
+    let u = String(cand).trim();
+    u = u.replace(/^APT\s*/i, '').replace(/^UNIT\s*/i, '').replace(/^#\s*/, '').trim();
+    return u || null;
+}
+
+function buildDisplayAddressFromJob(job) {
+    const street = job.street_name || job.streetname || job.street || '';
+    const house = job.house__ || job.house || job.houseno || job.house_number || '';
+    const base = [house, street].filter(Boolean).join(' ').trim();
+    const unit = extractUnitFromJob(job);
+    return unit ? `${base}, Apt ${unit}` : base;
+}
+
+// Build a display address from PLUTO record, preferring house number + street name
+function buildDisplayAddressFromPluto(p) {
+    const house = p.housenum || p.housenumber || null;
+    const street = p.stname || p.street || null;
+    const num = house ? String(house).trim() : '';
+    const st = street ? String(street).trim() : '';
+    if (num && st) return `${num} ${st}`;
+    // Fallback: use provided address field if available
+    if (p.address) return String(p.address).trim();
+    // Last resort: join available parts
+    return [num, st].filter(Boolean).join(' ').trim();
+}
 
 // Calculate months difference (past dates = positive number, future dates = negative number)
 const timeDiffInMonths = (dateStr, from = new Date()) => {
@@ -70,17 +215,23 @@ export function usePropertyProcessor(selectedBorough, selection) {
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState(null);
     const [stats, setStats] = useState({
-        likelySellers: 0, avgScore: 0, loansMaturing: 0, // Other stats will be 0 for now
+        likelySellers: 0,
+        avgScore: 0,
+        loansMaturing: 0,
+        displayedLeads: 0,
+        totalAnalyzed: 0, // Other stats will be 0 for now
     });
     const [progress, setProgress] = useState({});
+    const [isFromCache, setIsFromCache] = useState(false);
+    const [cacheLastUpdated, setCacheLastUpdated] = useState(null);
 
-    const fetchDataAndProcess = useCallback(async () => {
+    const fetchDataAndProcess = useCallback(async (forceLive = false) => {
         console.log('fetchDataAndProcess called with:', { selectedBorough, selectedNeighborhood });
         
         if (!selectedNeighborhood || selectedNeighborhood === 'All Manhattan' || !selectedBorough) {
             console.log('No neighborhood selected, skipping data fetch');
             setLeads([]);
-            setStats({ likelySellers: 0, avgScore: 0, loansMaturing: 0 });
+            setStats({ likelySellers: 0, avgScore: 0, loansMaturing: 0, displayedLeads: 0, totalAnalyzed: 0 });
             setProgress({});
             setIsLoading(false);
             return;
@@ -92,6 +243,35 @@ export function usePropertyProcessor(selectedBorough, selection) {
         setError(null);
         setLeads([]);
         setProgress({ pluto: 'loading...', acris: 'pending...' });
+        setIsFromCache(false);
+        setCacheLastUpdated(null);
+
+        // Cache-first: try to load neighborhood cache unless forceLive is true
+        if (!forceLive && selectedNTACode) {
+            try {
+                const slug = boroughSlug(selectedBorough);
+                const url = `/cache/${slug}/${selectedNTACode}.json`;
+                const res = await axios.get(url, { validateStatus: () => true });
+                if (res && res.status === 200 && res.data && Array.isArray(res.data.leads)) {
+                    console.log('Loaded cached results from', url);
+                    setLeads(res.data.leads || []);
+                    setStats(res.data.stats || { likelySellers: 0, avgScore: 0, loansMaturing: 0, displayedLeads: 0, totalAnalyzed: 0 });
+                    setProgress(p => ({
+                        ...p,
+                        cache: 'hit',
+                        cacheUpdated: res.data.lastUpdated || null,
+                    }));
+                    setIsFromCache(true);
+                    setCacheLastUpdated(res.data.lastUpdated || null);
+                    setIsLoading(false);
+                    return; // do not run live automatically when cache exists
+                } else {
+                    console.log('No cache found or bad cache response; falling back to live fetch');
+                }
+            } catch (e) {
+                console.log('Cache fetch error; proceeding to live fetch', e?.message || e);
+            }
+        }
 
         const acrisBoroughCode = { manhattan: '1', bronx: '2', brooklyn: '3', queens: '4', 'staten island': '5' }[selectedBorough.toLowerCase()];
         if (!acrisBoroughCode) {
@@ -117,10 +297,11 @@ export function usePropertyProcessor(selectedBorough, selection) {
             // Build server-side filters where possible and paginate to fetch ALL rows
             // Known fields: borough (e.g., 'MN'), cd (e.g., '107', '108'), bbl
             const whereClauses = [`borough='${boroughCode}'`];
-            // Apply CD from neighborhood mapping if available
+            // We will not add CD filters server-side to avoid 400s from schema differences (cd numeric vs borocd string).
+            // Instead, fetch by borough only and filter client-side by CDs where needed (e.g., MN24 => 101/102).
             const mapped = lookupNtaCd(selectedNeighborhood);
-            if (mapped?.cd) {
-                whereClauses.push(`cd='${mapped.cd}'`);
+            if (selectedNTACode && (mapped?.cd || mapped?.cds)) {
+                console.log('Will apply Community District filter client-side for', selectedNeighborhood, mapped);
             } else if (selectedNTACode) {
                 // Unknown mapping for provided NTA; proceed without server-side NTA filter
                 console.log(`No CD mapping for neighborhood ${selectedNeighborhood} (NTA ${selectedNTACode}); will filter client-side if needed.`);
@@ -174,16 +355,30 @@ export function usePropertyProcessor(selectedBorough, selection) {
                     // Try to filter using different strategies
                     let filteredData = plutoDataRaw;
                     
-                    // For Upper West Side (MN12), Community District is 107 or 107/108
-                    if (selectedNTACode === 'MN12' && (plutoDataRaw[0].cd || plutoDataRaw[0].borocd)) {
+                    // Apply client-side CD filtering based on neighborhoods.js mapping (supports split MN24)
+                    const mappedForFilter = lookupNtaCd(selectedNeighborhood);
+                    if (mappedForFilter && (plutoDataRaw[0].cd || plutoDataRaw[0].borocd)) {
                         const cdField = plutoDataRaw[0].cd ? 'cd' : 'borocd';
-                        filteredData = plutoDataRaw.filter(p => p[cdField] === '107' || p[cdField] === '108');
+                        if (Array.isArray(mappedForFilter.cds) && mappedForFilter.cds.length) {
+                            const cdsSet = new Set(mappedForFilter.cds.map(c => String(c).trim()));
+                            filteredData = plutoDataRaw.filter(p => cdsSet.has(String(p[cdField]).trim()));
+                            console.log(`Filtered by mapped CDs ${[...cdsSet].join(', ')} for ${selectedNeighborhood}: ${filteredData.length} properties`);
+                        } else if (mappedForFilter.cd) {
+                            const target = String(mappedForFilter.cd).trim();
+                            filteredData = plutoDataRaw.filter(p => String(p[cdField]).trim() === target);
+                            console.log(`Filtered by mapped CD ${target} for ${selectedNeighborhood}: ${filteredData.length} properties`);
+                        }
+                    }
+                    // For Upper West Side (MN12), Community District is 107 or 107/108 (fallback if mapping absent)
+                    else if (selectedNTACode === 'MN12' && (plutoDataRaw[0].cd || plutoDataRaw[0].borocd)) {
+                        const cdField = plutoDataRaw[0].cd ? 'cd' : 'borocd';
+                        filteredData = plutoDataRaw.filter(p => ['107','108'].includes(String(p[cdField]).trim())) ;
                         console.log(`Filtered by Community District 107/108 for Upper West Side: ${filteredData.length} properties`);
                     }
                     // For Upper East Side (MN40), Community District is 108
                     else if (selectedNTACode === 'MN40' && (plutoDataRaw[0].cd || plutoDataRaw[0].borocd)) {
                         const cdField = plutoDataRaw[0].cd ? 'cd' : 'borocd';
-                        filteredData = plutoDataRaw.filter(p => p[cdField] === '108');
+                        filteredData = plutoDataRaw.filter(p => String(p[cdField]).trim() === '108');
                         console.log(`Filtered by Community District 108 for Upper East Side: ${filteredData.length} properties`);
                     }
                     // For other neighborhoods, try using ZIP codes or other geographic indicators
@@ -257,7 +452,7 @@ export function usePropertyProcessor(selectedBorough, selection) {
                 properties[bblNorm] = {
                     bbl: bblNorm,
                     plutoData: p,
-                    address: p.address, // Assuming 'address' field exists in your PLUTO data
+                    address: buildDisplayAddressFromPluto(p),
                     ntaname: p.ntaname,
                     lastSaleDate: null,
                     tenureMonths: 0,
@@ -266,8 +461,6 @@ export function usePropertyProcessor(selectedBorough, selection) {
                     permitsLast12Months: 0,
                     complaintsLast30Days: 0,
                     unusedFARPercentage: 0,
-                    loanMaturityDate: null,
-                    daysToLoanMaturity: Infinity,
                 };
             });
 
@@ -414,68 +607,6 @@ export function usePropertyProcessor(selectedBorough, selection) {
                 setProgress(p => ({ ...p, acris: 'No matching document IDs found' }));
             }
             
-            // Fetch mortgage data from ACRIS
-            console.log('Fetching ACRIS Mortgage records...');
-            setProgress(p => ({ ...p, mortgages: 'loading...' }));
-            let mortgageRecords = [];
-            try {
-                // Get the document IDs we found from master records
-                const relevantDocumentIds = deedMasterRecords
-                    .filter(master => docIdToBblMap[master.document_id])
-                    .map(master => master.document_id);
-                
-                console.log('Relevant document IDs for mortgages:', relevantDocumentIds.length);
-                
-                // If we have document IDs to search for
-                if (relevantDocumentIds.length > 0) {
-                    // Batch the requests to avoid overwhelming the API
-                    const BATCH_SIZE = 25;
-                    const batches = [];
-                    
-                    // Create batches of document IDs
-                    for (let i = 0; i < relevantDocumentIds.length; i += BATCH_SIZE) {
-                        batches.push(relevantDocumentIds.slice(i, i + BATCH_SIZE));
-                    }
-                    
-                    console.log(`Processing ${batches.length} batches of mortgage requests`);
-                    
-                    // Process each batch sequentially to avoid rate limits
-                    for (let i = 0; i < batches.length; i++) {
-                        const batch = batches[i];
-                        const batchQuery = batch.map(id => `document_id='${id}'`).join(' OR ');
-                        
-                        try {
-                            const mortgageRes = await axios.get(MORTGAGE_ENDPOINT, {
-                                params: {
-                                    $limit: 100,
-                                    $where: batchQuery
-                                }
-                            });
-                            
-                            // Add the results to our mortgage records
-                            mortgageRecords = [...mortgageRecords, ...mortgageRes.data];
-                            console.log(`Batch ${i+1}/${batches.length}: got ${mortgageRes.data.length} mortgages`);
-                            
-                            // Brief delay to avoid rate limiting
-                            if (i < batches.length - 1) {
-                                await new Promise(resolve => setTimeout(resolve, 100));
-                            }
-                        } catch (err) {
-                            console.error(`Error in mortgage batch ${i+1}:`, err.message);
-                        }
-                    }
-                    
-                    console.log(`Total mortgage records fetched: ${mortgageRecords.length}`);
-                    setProgress(p => ({ ...p, mortgages: `${mortgageRecords.length} records fetched` }));
-                } else {
-                    console.log('No relevant document IDs for mortgages');
-                    setProgress(p => ({ ...p, mortgages: 'No relevant document IDs found' }));
-                }
-            } catch (err) {
-                console.error('Error fetching mortgage data:', err.message);
-                setProgress(p => ({ ...p, mortgages: `Error: ${err.message}` }));
-            }
-
             // Match deed records to properties via the document_id → BBL map
             let salesMatchCount = 0;
             deedMasterRecords.forEach(master => {
@@ -484,10 +615,11 @@ export function usePropertyProcessor(selectedBorough, selection) {
                         const prop = properties[bblKey];
                         if (prop) {
                             const saleDate = new Date(master.document_date);
-                            // Update last sale date if this one is more recent
+                            // Update last sale date and deed type if this one is more recent
                             if (!prop.lastSaleDate || saleDate > new Date(prop.lastSaleDate)) {
                                 prop.lastSaleDate = master.document_date;
-                                prop.documentId = master.document_id; // Store document ID for mortgage matching
+                                prop.lastDeedType = master.doc_type || null;
+                                prop.documentId = master.document_id; // Store document ID for reference
                                 salesMatchCount++;
                             }
                         }
@@ -495,146 +627,121 @@ export function usePropertyProcessor(selectedBorough, selection) {
                 }
             });
             console.log('Properties with sales data matched:', salesMatchCount);
-            
-            // Organize mortgage and foreclosure data by BBL
-            // We'll directly use BBL instead of document ID for matching
-            const bblToMortgagesMap = {};
-            const bblToForeclosuresMap = {};
-            
-            mortgageRecords.forEach(record => {
-                // Determine candidate BBLs for this record
-                let candidateBBLs = [];
-                if (record.bbl) {
-                    const normalized = normalizeBBLString(record.bbl);
-                    if (normalized) candidateBBLs.push(normalized);
-                } else if (record.document_id && docIdToBblMap[record.document_id]) {
-                    candidateBBLs = [...docIdToBblMap[record.document_id]];
-                }
 
-                if (candidateBBLs.length === 0) return; // No way to map
-
-                // Classify and store by BBL
-                candidateBBLs.forEach(normalizedBBL => {
-                    if (record.doc_type && (record.doc_type.includes('MORTGAGE') || record.doc_type.includes('MTG'))) {
-                        if (!bblToMortgagesMap[normalizedBBL]) {
-                            bblToMortgagesMap[normalizedBBL] = [];
-                        }
-                        bblToMortgagesMap[normalizedBBL].push(record);
-                    } else if (record.doc_type && (record.doc_type === 'LIS PENDENS' || record.doc_type === 'NOTICE OF PENDENCY')) {
-                        if (!bblToForeclosuresMap[normalizedBBL]) {
-                            bblToForeclosuresMap[normalizedBBL] = [];
-                        }
-                        bblToForeclosuresMap[normalizedBBL].push(record);
-                    }
-                });
-            });
-            
-            // Now match mortgages and foreclosures to properties
-            let mortgageMatchCount = 0;
-            let foreclosureMatchCount = 0;
-            
-            Object.values(properties).forEach(prop => {
-                // Match mortgages by BBL
-                if (bblToMortgagesMap[prop.bbl]) {
-                    prop.mortgages = bblToMortgagesMap[prop.bbl];
-                    mortgageMatchCount++;
-                    
-                    // Find most recent mortgage with maturity date
-                    const mortgagesWithMaturity = prop.mortgages
-                        .filter(m => m.good_through_date)
-                        .sort((a, b) => new Date(b.document_date) - new Date(a.document_date));
-                    
-                    if (mortgagesWithMaturity.length > 0) {
-                        const latestMortgage = mortgagesWithMaturity[0];
-                        prop.mortgageDate = latestMortgage.document_date;
-                        prop.mortgageMaturityDate = latestMortgage.good_through_date;
+            // Build address index for PLUTO properties to match DOB jobs by address
+            const addressIndex = {};
+            Object.keys(properties).forEach(bbl => {
+                const p = properties[bbl];
+                // Prefer explicit components if present
+                let house = p.plutoData?.housenum || p.plutoData?.housenumber || null;
+                let street = p.plutoData?.stname || p.plutoData?.street || null;
+                if ((!house || !street) && p.address) {
+                    const parts = String(p.address).trim().split(/\s+/);
+                    if (parts.length > 1) {
+                        house = parts[0];
+                        street = parts.slice(1).join(' ');
                     }
                 }
-                
-                // Match foreclosures by BBL
-                if (bblToForeclosuresMap[prop.bbl]) {
-                    prop.foreclosures = bblToForeclosuresMap[prop.bbl];
-                    foreclosureMatchCount++;
-                    
-                    // Find most recent foreclosure notice
-                    prop.foreclosures.sort((a, b) => new Date(b.document_date) - new Date(a.document_date));
-                    prop.latestForeclosureDate = prop.foreclosures[0].document_date;
-                }
-                
-                // If we have mortgage data but no sale date, use mortgage date as sale date
-                if (!prop.lastSaleDate && prop.mortgageDate) {
-                    prop.lastSaleDate = prop.mortgageDate;
+                const key = normalizeAddressParts(house, street);
+                if (key) {
+                    if (!addressIndex[key]) addressIndex[key] = [];
+                    addressIndex[key].push(bbl);
                 }
             });
             
-            console.log('Properties with mortgage data matched:', mortgageMatchCount);
-            console.log('Properties with foreclosure data matched:', foreclosureMatchCount);
-            
-            // 3. Fetch DOB Jobs data
+            // 3. Fetch DOB Jobs data (address-based batching to avoid SoQL issues with block IN)
             setProgress(p => ({ ...p, dob: 'loading...' }));
             try {
-                console.log('Fetching DOB Jobs for target BBLs');
+                console.log('Fetching DOB Jobs by address');
                 let allDobJobs = [];
-                
-                // Build block-based queries to reduce OR complexity
-                const bblList = Object.keys(properties);
-                const blocks = Array.from(new Set(bblList.map(b => parseInt(b.substring(1, 6), 10).toString())));
-                const BLOCK_BATCH_SIZE = 30; // keep query short
-                for (let i = 0; i < blocks.length; i += BLOCK_BATCH_SIZE) {
-                    const blockBatch = blocks.slice(i, i + BLOCK_BATCH_SIZE);
-                    const boroughText = Object.keys(boroughTextToNumeric).find(k => boroughTextToNumeric[k] === acrisBoroughCode) || 'MANHATTAN';
-                    const where = `borough='${boroughText}' AND block IN(${blockBatch.map(b => `'${b}'`).join(',')})`;
+                const boroughText = Object.keys(boroughTextToNumeric).find(k => boroughTextToNumeric[k] === acrisBoroughCode) || 'MANHATTAN';
+                const addrKeys = Object.keys(addressIndex);
+                const ADDR_BATCH_SIZE = 20;
+                for (let i = 0; i < addrKeys.length; i += ADDR_BATCH_SIZE) {
+                    const batchKeys = addrKeys.slice(i, i + ADDR_BATCH_SIZE);
+                    console.log(`Fetching DOB Jobs addresses ${i + 1}-${Math.min(i + ADDR_BATCH_SIZE, addrKeys.length)}/${addrKeys.length}`);
+                    const clauses = batchKeys.map(k => {
+                        const parts = k.split(' ');
+                        const house = parts.shift();
+                        const street = parts.join(' ');
+                        const safeHouse = house.replace(/'/g, "''");
+                        const safeStreet = street.replace(/'/g, "''");
+                        const safeStreetU = safeStreet.toUpperCase();
+                        return `((upper(street_name)='${safeStreetU}' OR upper(streetname)='${safeStreetU}') AND (house__='${safeHouse}' OR house='${safeHouse}' OR houseno='${safeHouse}' OR house_number='${safeHouse}'))`;
+                    });
+                    const where = `(borough='${boroughText}' OR borough=${acrisBoroughCode}) AND (${clauses.join(' OR ')})`;
                     try {
-                        console.log(`Fetching DOB Jobs blocks ${i + 1}-${Math.min(i + BLOCK_BATCH_SIZE, blocks.length)}/${blocks.length}`);
-                        const dobJobsRes = await axios.get(DOBJOBS_ENDPOINT, {
-                            params: {
-                                $where: where,
-                                $limit: 5000
-                            }
-                        });
-                        allDobJobs = [...allDobJobs, ...dobJobsRes.data];
+                        const res = await axios.get(DOBJOBS_ENDPOINT, { params: { $where: where, $limit: 50000 } });
+                        allDobJobs = [...allDobJobs, ...res.data];
                     } catch (err) {
-                        console.error(`Error fetching DOB Jobs blocks batch ${i / BLOCK_BATCH_SIZE + 1}:`, err.message);
+                        console.error(`Error fetching DOB Jobs address batch ${i / ADDR_BATCH_SIZE + 1}:`, err.message);
                     }
-                    if (i + BLOCK_BATCH_SIZE < blocks.length) {
+                    if (i + ADDR_BATCH_SIZE < addrKeys.length) {
                         await new Promise(resolve => setTimeout(resolve, 100));
                     }
                 }
-                
+
                 console.log('DOB Jobs received:', allDobJobs.length);
                 const dobJobsRes = { data: allDobJobs };
-                
+
                 const dobJobs = dobJobsRes.data;
                 console.log('DOB Jobs received:', dobJobs.length);
                 
-                // Match DOB jobs to properties
-                // Map DOB borough text names to numeric codes
-                const dobBoroughToNumeric = boroughTextToNumeric;
-                
+                // Match DOB jobs to properties by normalized address, with BBL fallback
                 let dobJobsMatched = 0;
                 dobJobs.forEach(job => {
-                    // Try to construct BBL from job data
-                    if (job.block && job.lot && job.borough) {
-                        // Convert text borough to numeric code
-                        const numericJobBorough = dobBoroughToNumeric[job.borough.toUpperCase()];
-                        if (numericJobBorough) {
-                            const jobBbl = makeBBL(numericJobBorough, job.block, job.lot);
-                            if (jobBbl && properties[jobBbl]) {
-                                properties[jobBbl].dobJobs = properties[jobBbl].dobJobs || [];
-                                properties[jobBbl].dobJobs.push(job);
+                    const street = job.street_name || job.streetname || job.street || null;
+                    const house = job.house__ || job.house || job.houseno || job.house_number || null;
+                    const key = normalizeAddressParts(house, street);
+                    let matched = false;
+                    if (key && addressIndex[key] && addressIndex[key].length) {
+                        let candidates = addressIndex[key];
+                        if (candidates.length > 1 && job.block) {
+                            const jobBlock = String(job.block).replace(/[^0-9]/g, '');
+                            const filtered = candidates.filter(bbl => bbl.substring(1, 6) === jobBlock.padStart(5, '0'));
+                            if (filtered.length) candidates = filtered;
+                        }
+                        const bbl = candidates[0];
+                        if (properties[bbl]) {
+                            // Annotate job with display address and unit for UI
+                            job._unit = extractUnitFromJob(job);
+                            job._displayAddress = buildDisplayAddressFromJob(job);
+                            properties[bbl].dobJobs = properties[bbl].dobJobs || [];
+                            properties[bbl].dobJobs.push(job);
+                            dobJobsMatched++;
+                            matched = true;
+                        }
+                    }
+                    if (!matched) {
+                        // Fallback to BBL-based
+                        if (job.bbl) {
+                            const norm = normalizeBBLString(job.bbl);
+                            if (norm && properties[norm]) {
+                                job._unit = extractUnitFromJob(job);
+                                job._displayAddress = buildDisplayAddressFromJob(job);
+                                properties[norm].dobJobs = properties[norm].dobJobs || [];
+                                properties[norm].dobJobs.push(job);
                                 dobJobsMatched++;
                             }
-                        }
-                    } else if (job.bbl) {
-                        const norm = normalizeBBLString(job.bbl);
-                        if (norm && properties[norm]) {
-                            properties[norm].dobJobs = properties[norm].dobJobs || [];
-                            properties[norm].dobJobs.push(job);
-                            dobJobsMatched++;
+                        } else if (job.block && job.lot && job.borough) {
+                            const boroughRaw = String(job.borough).toUpperCase();
+                            const numericJobBorough = boroughTextToNumeric[boroughRaw] || (['1','2','3','4','5'].includes(boroughRaw) ? boroughRaw : undefined);
+                            if (numericJobBorough) {
+                                const blockDigits = String(job.block).replace(/[^0-9]/g, '');
+                                const lotDigits = String(job.lot).replace(/[^0-9]/g, '');
+                                const jobBbl = makeBBL(numericJobBorough, blockDigits, lotDigits);
+                                if (jobBbl && properties[jobBbl]) {
+                                    job._unit = extractUnitFromJob(job);
+                                    job._displayAddress = buildDisplayAddressFromJob(job);
+                                    properties[jobBbl].dobJobs = properties[jobBbl].dobJobs || [];
+                                    properties[jobBbl].dobJobs.push(job);
+                                    dobJobsMatched++;
+                                }
+                            }
                         }
                     }
                 });
-                console.log(`DOB Jobs matched to properties: ${dobJobsMatched}`);
+                console.log(`DOB Jobs matched to properties (address-first): ${dobJobsMatched}`);
                 setProgress(p => ({ ...p, dob: `${dobJobs.length} records processed, ${dobJobsMatched} matched` }));
             } catch (err) {
                 console.error('Error fetching DOB Jobs:', err.message);
@@ -648,25 +755,44 @@ export function usePropertyProcessor(selectedBorough, selection) {
                 console.log('Fetching 311 complaints for target BBLs');
                 let all311Complaints = [];
                 
-                // Use BBL IN(...) batches
+                // Use BBL IN(...) batches; mitigate rate limits with smaller batches and retry on 429
                 const targetBBLsArr = Object.keys(properties);
-                const BBL_BATCH_SIZE = 20;
+                const BBL_BATCH_SIZE = 10;
+                const createdCutoff = new Date();
+                createdCutoff.setDate(createdCutoff.getDate() - 60);
+                const createdIso = createdCutoff.toISOString();
+                let bblQuerySupported = true;
                 for (let i = 0; i < targetBBLsArr.length; i += BBL_BATCH_SIZE) {
+                    if (!bblQuerySupported) break;
                     const batch = targetBBLsArr.slice(i, i + BBL_BATCH_SIZE);
-                    const where = `bbl IN(${batch.map(b => `'${b}'`).join(',')})`;
-                    try {
-                        const threeoneoneRes = await axios.get(THREEONEONE_ENDPOINT, {
-                            params: {
-                                $where: where,
-                                $limit: 5000
+                    const where = `created_date >= '${createdIso}' AND bbl IN(${batch.map(b => `'${b}'`).join(',')})`;
+                    let attempt = 0;
+                    const maxAttempts = 2;
+                    while (attempt < maxAttempts) {
+                        try {
+                            const threeoneoneRes = await axios.get(THREEONEONE_ENDPOINT, {
+                                params: { $where: where, $limit: 50000, $select: 'unique_key,bbl,incident_address,complaint_type,created_date' }
+                            });
+                            all311Complaints = [...all311Complaints, ...threeoneoneRes.data];
+                            break; // success
+                        } catch (err) {
+                            const status = err?.response?.status;
+                            if (status === 429 && attempt + 1 < maxAttempts) {
+                                console.warn(`311 batch ${i / BBL_BATCH_SIZE + 1} hit 429; retrying after backoff...`);
+                                await new Promise(resolve => setTimeout(resolve, 1500));
+                                attempt++;
+                                continue;
+                            } else if (status === 400) {
+                                console.warn('311 BBL-based query not supported or invalid; switching to address-based fallback.');
+                                bblQuerySupported = false;
+                                break;
                             }
-                        });
-                        all311Complaints = [...all311Complaints, ...threeoneoneRes.data];
-                    } catch (err) {
-                        console.error(`Error fetching 311 complaints batch ${i / BBL_BATCH_SIZE + 1}:`, err.message);
+                            console.error(`Error fetching 311 complaints batch ${i / BBL_BATCH_SIZE + 1}:`, err.message);
+                            break;
+                        }
                     }
                     if (i + BBL_BATCH_SIZE < targetBBLsArr.length) {
-                        await new Promise(resolve => setTimeout(resolve, 100));
+                        await new Promise(resolve => setTimeout(resolve, 250));
                     }
                 }
                 
@@ -683,7 +809,7 @@ export function usePropertyProcessor(selectedBorough, selection) {
                         const where = `borough='${boroughText311}' AND incident_address IN(${safeList})`;
                         try {
                             const res = await axios.get(THREEONEONE_ENDPOINT, {
-                                params: { $where: where, $limit: 5000 }
+                                params: { $where: where, $limit: 50000 }
                             });
                             all311Complaints = [...all311Complaints, ...res.data];
                         } catch (err) {
@@ -701,7 +827,7 @@ export function usePropertyProcessor(selectedBorough, selection) {
                 const complaints = threeoneoneRes.data;
                 console.log('311 complaints received:', complaints.length);
                 
-                // Link complaints to properties by BBL when available, then fallback to address matching
+                // Link complaints to properties by BBL when available, then fallback to normalized address matching
                 let complaintsMatched = 0;
                 complaints.forEach(complaint => {
                     // Try BBL matching first (more accurate)
@@ -713,18 +839,24 @@ export function usePropertyProcessor(selectedBorough, selection) {
                     } 
                     // Fallback to address matching if BBL not available or no match found
                     else if (complaint.incident_address) {
-                        Object.values(properties).forEach(prop => {
-                            if (prop.address && complaint.incident_address.toUpperCase().includes(prop.address.toUpperCase())) {
-                                // Initialize complaints array if needed
+                        const { house, street } = parseHouseAndStreet(complaint.incident_address);
+                        const key = normalizeAddressParts(house, street);
+                        if (key && addressIndex[key] && addressIndex[key].length) {
+                            addressIndex[key].forEach(bbl => {
+                                const prop = properties[bbl];
+                                if (!prop) return;
                                 prop.complaints = prop.complaints || [];
                                 prop.complaints.push(complaint);
                                 complaintsMatched++;
-                            }
-                        });
+                            });
+                        }
                     }
                 });
                 
                 console.log('311 complaints matched to properties:', complaintsMatched);
+
+                // Ensure each property's display address includes a house number if possible
+                Object.values(properties).forEach(prop => ensureDisplayAddressWithNumber(prop));
                 setProgress(p => ({ ...p, 311: `${complaints.length} records (${complaintsMatched} matched)` }));
             } catch (err) {
                 console.error('Error fetching 311 complaints:', err.message);
@@ -736,78 +868,34 @@ export function usePropertyProcessor(selectedBorough, selection) {
             console.log('Beginning property scoring and filtering...');
             const processedLeads = [];
             let totalScoreSum = 0;
-            let loansMaturing = 0;
             
             // No mock data - using only real data from APIs
             console.log('Processing properties with real data only...');
             
             // Calculate metrics for each property
             Object.values(properties).forEach(prop => {
-                // Initialize score at 2.0 base
-                prop.score = 2.0;
+                // Initialize score at 1.5 base to increase spread among signals
+                prop.score = 1.5;
                 
-                // 1. PRE-FORECLOSURE NOTICES (LIS PENDENS) - HIGHEST PRIORITY INDICATOR
-                if (prop.foreclosures && prop.foreclosures.length > 0) {
-                    // Pre-foreclosure is a very strong indicator of a distressed seller
-                    const daysFromLastForeclosure = timeDiffInMonths(prop.latestForeclosureDate) * 30;
-                    
-                    // Recent pre-foreclosure notices are extremely strong indicators
-                    if (daysFromLastForeclosure <= 90) {
-                        prop.score += 2.5; // Highest score boost
-                        prop.hasRecentForeclosure = true;
-                    } else if (daysFromLastForeclosure <= 180) {
-                        prop.score += 2.0;
-                        prop.hasRecentForeclosure = true;
-                    } else {
-                        prop.score += 1.0; // Older but still relevant
-                        prop.hasRecentForeclosure = false;
-                    }
-                }
-                
-                // 2. MORTGAGE MATURITY - VERY HIGH PRIORITY INDICATOR
-                // Calculate months left on mortgage
-                if (prop.mortgageMaturityDate) {
-                    // Make sure the mortgage date is valid
-                    const maturityDate = new Date(prop.mortgageMaturityDate);
-                    if (!isNaN(maturityDate.getTime())) {
-                        // Valid date - calculate months left
-                        prop.mortgageMonthsLeft = monthsLeftUntil(prop.mortgageMaturityDate);
-                        
-                        // If the mortgage is close to maturity, increase score
-                        if (prop.mortgageMonthsLeft !== null) {
-                            if (prop.mortgageMonthsLeft <= 6 && prop.mortgageMonthsLeft >= 0) {
-                                // Mortgage due within 6 months - very high priority
-                                prop.score += 1.8;
-                                loansMaturing++;
-                                prop.loanMaturingSoon = true;
-                            } else if (prop.mortgageMonthsLeft <= 12 && prop.mortgageMonthsLeft > 6) {
-                                // Mortgage due within 7-12 months - high priority
-                                prop.score += 1.4;
-                                loansMaturing++;
-                                prop.loanMaturingSoon = true;
-                            } else if (prop.mortgageMonthsLeft < 0) {
-                                // Mortgage already past due - extremely high priority
-                                prop.score += 2.0;
-                                loansMaturing++;
-                                prop.loanPastDue = true;
-                            }
-                        }
-                    } else {
-                        // Invalid date - clear the property
-                        prop.mortgageMaturityDate = null;
-                    }
-                }
-                
-                // 3. LONG TENURE - SUPPORTING INDICATOR
+                // Prepare badges container
+                prop.signalBadges = [];
+
+                // 1. LONG TENURE - SUPPORTING INDICATOR
                 if (prop.lastSaleDate) {
                     prop.tenureMonths = timeDiffInMonths(prop.lastSaleDate);
-                    
-                    // Long tenure increases likelihood of selling
-                    if (prop.tenureMonths > 180) { // 15+ years
-                        prop.score += 0.6;
-                    } else if (prop.tenureMonths >= 120) { // 10+ years
-                        prop.score += 0.4;
+                    if (typeof prop.tenureMonths === 'number') {
+                        if (prop.tenureMonths > 180) { // 15+ years
+                            prop.score += 0.6;
+                            prop.signalBadges.push('Owned 15+ years');
+                        } else if (prop.tenureMonths >= 120) { // 10+ years
+                            prop.score += 0.4;
+                            prop.signalBadges.push('Owned 10+ years');
+                        }
                     }
+                }
+                // Derive owned years for display from tenure only
+                if (typeof prop.tenureMonths === 'number') {
+                    prop.ownedYears = Math.floor(prop.tenureMonths / 12);
                 }
                 
                 // 4. DOB JOBS (PERMITS) - STRONG SUPPORTING INDICATOR
@@ -837,15 +925,19 @@ export function usePropertyProcessor(selectedBorough, selection) {
                     if (hasRenovationJobs && prop.permitsLast12Months > 1) {
                         // Multiple renovation jobs - very strong indicator
                         prop.score += 1.2;
+                        prop.signalBadges.push('Renovations (A1/A2/DM)');
                     } else if (hasRenovationJobs) {
                         // At least one renovation job
                         prop.score += 0.9;
+                        prop.signalBadges.push('Renovation Permit');
                     } else if (prop.permitsLast12Months > 2) {
                         // Multiple non-renovation jobs
                         prop.score += 0.7;
+                        prop.signalBadges.push('Multiple Permits');
                     } else if (prop.permitsLast12Months >= 1) {
                         // At least one job of any type
                         prop.score += 0.4;
+                        prop.signalBadges.push('Recent Permit');
                     }
                 } else {
                     prop.permitsLast12Months = 0;
@@ -878,19 +970,28 @@ export function usePropertyProcessor(selectedBorough, selection) {
                     const hasSeriousComplaints = recentComplaints.some(c => 
                         seriousComplaintTypes.some(type => c.complaint_type && c.complaint_type.includes(type)));
                     
-                    // Add to score based on complaint severity and count
-                    if (hasSeriousComplaints && prop.complaintsLast30Days > 2) {
-                        // Multiple serious complaints - very strong indicator of fatigue
-                        prop.score += 1.0;
-                    } else if (hasSeriousComplaints) {
-                        // At least one serious complaint
-                        prop.score += 0.7;
-                    } else if (prop.complaintsLast30Days > 2) {
-                        // Multiple non-serious complaints
-                        prop.score += 0.6;
-                    } else if (prop.complaintsLast30Days >= 1) {
-                        // At least one complaint of any type
-                        prop.score += 0.3;
+                    // Per-unit normalization using PLUTO unitsres
+                    const unitsRes = parseInt((prop.plutoData && prop.plutoData.unitsres) || 0, 10);
+                    const denom = Number.isFinite(unitsRes) && unitsRes > 0 ? unitsRes : 1;
+                    const cpu = prop.complaintsLast30Days / denom;
+                    prop.complaintsPerUnit30Days = parseFloat(cpu.toFixed(2));
+
+                    // Add to score: +0.3 for every 5 complaints in the last 30 days (linear)
+                    const steps = Math.floor(prop.complaintsLast30Days / 5);
+                    if (steps > 0) {
+                        const inc = parseFloat((steps * 0.3).toFixed(1));
+                        prop.score += inc;
+                        prop.signalBadges.push(`Complaints +${inc} (${prop.complaintsLast30Days} in 30d)`);
+                    }
+                    // Small extra nudge for presence of any serious complaint
+                    if (hasSeriousComplaints) {
+                        prop.score += 0.2;
+                        prop.signalBadges.push('Serious Complaint');
+                    }
+                    // Extra nudge if complaints per unit is high
+                    if (prop.complaintsPerUnit30Days >= 0.15) {
+                        prop.score += 0.2;
+                        prop.signalBadges.push('High Complaints/Unit');
                     }
                 } else {
                     prop.complaintsLast30Days = 0;
@@ -898,12 +999,28 @@ export function usePropertyProcessor(selectedBorough, selection) {
                 }
                 
                 // 6. DEVELOPMENT POTENTIAL (FAR)
-                if (prop.builtfar && prop.residfar && prop.residfar > 0) {
-                    // Calculate remaining development potential
-                    const remainingFAR = prop.residfar;
-                    if (remainingFAR > 2) {
-                        // Significant development potential
-                        prop.score += 0.5;
+                // Use PLUTO fields to estimate remaining FAR = max(residfar, commfar, facilfar) - builtfar
+                {
+                    const pd = prop.plutoData || {};
+                    const toNum = (v) => {
+                        const n = parseFloat(v);
+                        return Number.isFinite(n) ? n : 0;
+                    };
+                    const built = toNum(pd.builtfar);
+                    const allowed = Math.max(toNum(pd.residfar), toNum(pd.commfar), toNum(pd.facilfar));
+                    const lotArea = toNum(pd.lotarea);
+                    const remainingFAR = allowed - built;
+                    if (lotArea >= 2000) {
+                        if (remainingFAR >= 8) {
+                            prop.score += 4.0;
+                            prop.signalBadges.push(`Underbuilt FAR +${remainingFAR.toFixed(1)} (8+)`);
+                        } else if (remainingFAR >= 5) {
+                            prop.score += 2.0;
+                            prop.signalBadges.push(`Underbuilt FAR +${remainingFAR.toFixed(1)} (5+)`);
+                        } else if (remainingFAR >= 2) {
+                            prop.score += 0.5;
+                            prop.signalBadges.push(`Underbuilt FAR +${remainingFAR.toFixed(1)}`);
+                        }
                     }
                 }
                 
@@ -917,11 +1034,7 @@ export function usePropertyProcessor(selectedBorough, selection) {
                     // If no specific indicators were found, still show the property but
                     // with just the base score (2.0)
                     
-                    // Make DOB jobs and complaints stronger indicators since ACRIS data is limited
-                    if (prop.permitsLast12Months > 0 || prop.complaintsLast30Days > 0) {
-                        // Boost score for permits and complaints
-                        prop.score += 0.5;
-                    }
+                    // Keep scores driven by specific signals above; remove generic boost
                     
                     // Add to the processed leads list - we want all properties
                     processedLeads.push(prop);
@@ -929,32 +1042,35 @@ export function usePropertyProcessor(selectedBorough, selection) {
                 }
             });
             
-            // Take the top 50 leads by score or all if fewer than 50
+            // Sort by score and limit for performance
             processedLeads.sort((a, b) => b.score - a.score);
             
             // NEVER use sample data - we should have real properties already
             console.log('Using real properties only, no sample data fallback');
             
-            // Limit to top 50 for performance
-            const displayLeads = processedLeads.slice(0, 50);
+            // Limit to top N for performance (increase from 50 to 200)
+            const MAX_LEADS = 200;
+            const displayLeads = processedLeads.slice(0, MAX_LEADS);
             
             console.log('Final leads count:', displayLeads.length);
             setLeads(displayLeads);
             const avgScore = displayLeads.length > 0 ? 
-                parseFloat(((totalScoreSum || displayLeads.length * 2.0) / displayLeads.length).toFixed(1)) : 
+                parseFloat((displayLeads.reduce((sum, p) => sum + (p.score || 0), 0) / displayLeads.length).toFixed(1)) : 
                 0;
+            const flaggedCount = processedLeads.filter(p => (p.score || 0) >= 3.0).length;
                 
             setStats({
-                likelySellers: processedLeads.length || displayLeads.length,
+                likelySellers: flaggedCount,
                 avgScore: avgScore,
-                loansMaturing: loansMaturing, // Use the count of loans maturing we calculated
+                loansMaturing: 0,
+                displayedLeads: displayLeads.length,
+                totalAnalyzed: processedLeads.length,
             });
             
             // Provide detailed analysis summary
             setProgress(p => ({
                 ...p,
-                mortgages: `${mortgageRecords.length} records, ${mortgageMatchCount} matched, ${loansMaturing} maturing`,
-                analysis: `Complete: Found ${displayLeads.length} leads (${loansMaturing} with maturing loans)`
+                analysis: `Complete: Found ${displayLeads.length} leads (${flaggedCount} scored ≥ 3.0)`
             }));
         } finally {
             setIsLoading(false);
@@ -965,5 +1081,17 @@ export function usePropertyProcessor(selectedBorough, selection) {
         fetchDataAndProcess();
     }, [fetchDataAndProcess]); // Re-run when selection changes
 
-    return { leads, isLoading, error, stats, progress, refreshData: fetchDataAndProcess };
+    const reRunNow = useCallback(() => fetchDataAndProcess(true), [fetchDataAndProcess]);
+
+    return { 
+        leads, 
+        isLoading, 
+        error, 
+        stats, 
+        progress, 
+        refreshData: fetchDataAndProcess,
+        reRunNow,
+        isFromCache,
+        cacheLastUpdated,
+    };
 }

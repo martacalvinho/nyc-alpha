@@ -95,7 +95,7 @@ function AlphaNavigator() {
     const [enteredLoadAt, setEnteredLoadAt] = useState(0);
 
     // Use our property processor hook
-    const { leads, isLoading, error, stats, progress, refreshData } = usePropertyProcessor(
+    const { leads, isLoading, error, stats, progress, refreshData, reRunNow, isFromCache, cacheLastUpdated } = usePropertyProcessor(
         selection.borough,
         selection // Pass the entire selection object to get access to the ntaCode
     );
@@ -183,10 +183,10 @@ function AlphaNavigator() {
                 marginBottom: '24px', 
                 flexWrap: 'wrap' 
             }}>
-                <SummaryCard title="Likely Sellers" value={stats.likelySellers} isLoading={isLoading && currentAppStep < 3} />
-                <SummaryCard title="New Today" value={"N/A"} isLoading={isLoading && currentAppStep < 3} />
+                <SummaryCard title="Likely Sellers (≥3.0)" value={stats.likelySellers} isLoading={isLoading && currentAppStep < 3} />
+                <SummaryCard title="Total Analyzed" value={stats.totalAnalyzed} isLoading={isLoading && currentAppStep < 3} />
                 <SummaryCard title="Avg Score" value={typeof stats.avgScore === 'number' ? stats.avgScore.toFixed(1) : stats.avgScore} isLoading={isLoading && currentAppStep < 3} />
-                <SummaryCard title="Loans Maturing" value={stats.loansMaturing} isLoading={isLoading && currentAppStep < 3} />
+                <SummaryCard title="Displayed Leads" value={stats.displayedLeads} isLoading={isLoading && currentAppStep < 3} />
             </div>
 
             <div style={{ display: 'flex', gap: '24px' }}>
@@ -203,6 +203,57 @@ function AlphaNavigator() {
                         currentSelection={selection}
                     />
                     <DatasetsProgress progress={progress} />
+                    {/* Cache status and re-run control */}
+                    {selection.neighborhood !== 'All Manhattan' && (
+                        <div style={{
+                            backgroundColor: 'white',
+                            border: '1px solid #e2e8f0',
+                            borderRadius: 8,
+                            padding: '12px 14px',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            boxShadow: '0 2px 8px rgba(0,0,0,0.04)'
+                        }}>
+                            <div style={{ color: '#475569', fontSize: 14 }}>
+                                {isFromCache ? (
+                                    <>
+                                        Using cached results
+                                        {cacheLastUpdated && (
+                                            <span style={{ color: '#64748b' }}> • Updated {new Date(cacheLastUpdated).toLocaleString()}</span>
+                                        )}
+                                    </>
+                                ) : (
+                                    <>
+                                        Live results
+                                        {progress?.cacheUpdated && (
+                                            <span style={{ color: '#64748b' }}> • Cache last updated {new Date(progress.cacheUpdated).toLocaleString()}</span>
+                                        )}
+                                    </>
+                                )}
+                            </div>
+                            <button
+                                disabled={isLoading}
+                                onClick={() => {
+                                    // Force live run and show Load step
+                                    if (currentAppStep !== 2) setCurrentAppStep(2);
+                                    setEnteredLoadAt(Date.now());
+                                    reRunNow();
+                                }}
+                                style={{
+                                    backgroundColor: isLoading ? '#cbd5e1' : '#2563eb',
+                                    color: 'white',
+                                    border: 'none',
+                                    borderRadius: 6,
+                                    padding: '8px 12px',
+                                    fontSize: 14,
+                                    cursor: isLoading ? 'not-allowed' : 'pointer'
+                                }}
+                            >
+                                {isLoading ? 'Running…' : (isFromCache ? 'Re-run (live)' : 'Re-run')}
+                            </button>
+                        </div>
+                    )}
                     {error && (
                         <div style={{ 
                             color: '#b91c1c', 

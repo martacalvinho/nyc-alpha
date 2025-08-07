@@ -3,7 +3,6 @@ import axios from 'axios';
 import { FixedSizeList as List } from 'react-window';
 import NeighborhoodMap from './NeighborhoodMap';
 import NeighborhoodSelector from './NeighborhoodSelector';
-import AcrisMortgageTable from './AcrisMortgageTable';
 import MapPluto from './MapPluto';
 import AlphaNavigator from './AlphaNavigator';
 import './App.css';
@@ -516,7 +515,7 @@ function AcrisExplorer({ selection, setSelection }) {
 
 
 function App() {
-  const [activeTab, setActiveTab] = React.useState('alpha'); // 'alpha', 'explorer', 'mortgages'
+  const [activeTab, setActiveTab] = React.useState('alpha'); // 'alpha', 'explorer'
   const [selection, setSelection] = React.useState({ borough: 'manhattan', neighborhood: 'All Manhattan' });
 
   // Handler for map click: update dropdown/table selection
@@ -543,12 +542,6 @@ function App() {
         >
           Main Explorer
         </div>
-        <div
-          className={`Tab${activeTab === 'mortgages' ? ' active' : ''}`}
-          onClick={() => setActiveTab('mortgages')}
-        >
-          ACRIS Mortgages
-        </div>
       </div>
       {activeTab === 'alpha' && (
         <div>
@@ -564,12 +557,7 @@ function App() {
           />
         </div>
       )}
-      {activeTab === 'mortgages' && (
-        <div>
-          <h2 style={{margin: '18px 0 10px 0'}}>ACRIS Mortgages</h2>
-          <AcrisMortgageTable />
-        </div>
-      )}
+      {/* Mortgages tab removed */}
     </div>
   );
 }

@@ -6,6 +6,7 @@ const PropertyLeadsTable = ({ leads }) => {
     // Set up filter state
     const [activeFilter, setActiveFilter] = useState('all');
     const [showStrategyExplanation, setShowStrategyExplanation] = useState(true);
+    const [expandedBBL, setExpandedBBL] = useState(null);
     
     // Filter functions for different strategies
     const filterStrategies = {
@@ -60,15 +61,6 @@ const PropertyLeadsTable = ({ leads }) => {
             }
         },
         { accessor: 'lastSaleDate', Header: 'Last Sale', Cell: ({ value }) => formatDate(value) },
-        { 
-            accessor: 'mortgageMonthsLeft', 
-            Header: 'Mortgage Mo. Left', 
-            Cell: ({ value }) => {
-                if (value === null) return 'N/A';
-                if (value < 0) return <span style={{ color: '#d32f2f' }}>{Math.abs(value)} overdue</span>;
-                return <span>{value}</span>;
-            } 
-        },
         { accessor: 'complaintsLast30Days', Header: 'Complaints 30d', Cell: ({ value }) => value || '0' },
         { accessor: 'permitsLast12Months', Header: 'DOB Jobs 12m', Cell: ({ value }) => value || '0' },
         { 
@@ -82,7 +74,9 @@ const PropertyLeadsTable = ({ leads }) => {
                 if (row.complaintTypes && row.complaintTypes.length > 0) {
                     details.push(`Issues: ${row.complaintTypes.slice(0, 2).join(', ')}${row.complaintTypes.length > 2 ? '...' : ''}`);
                 }
-                if (row.tenureMonths) {
+                if (typeof row.ownedYears === 'number') {
+                    details.push(`Owned ${row.ownedYears} years`);
+                } else if (row.tenureMonths) {
                     details.push(`Owned ${Math.floor(row.tenureMonths/12)} years`);
                 }
                 return details.join(' | ') || 'No details';
@@ -304,13 +298,80 @@ const PropertyLeadsTable = ({ leads }) => {
                 </thead>
                 <tbody>
                     {filteredLeads.map((row, rowIndex) => (
-                        <tr key={row.bbl || rowIndex} style={{ backgroundColor: rowIndex % 2 ? '#f9f9f9' : '#fff' }}>
-                            {columns.map(col => (
-                                <td key={col.accessor} style={{ border: '1px solid #ddd', padding: '8px', whiteSpace: 'nowrap' }}>
-                                    {col.Cell ? col.Cell({ value: row[col.accessor], row }) : row[col.accessor]}
-                                </td>
-                            ))}
-                        </tr>
+                        <>
+                            <tr
+                                key={row.bbl || rowIndex}
+                                onClick={() => setExpandedBBL(expandedBBL === row.bbl ? null : row.bbl)}
+                                style={{ backgroundColor: rowIndex % 2 ? '#f9f9f9' : '#fff', cursor: 'pointer' }}
+                                title="Click to view details"
+                            >
+                                {columns.map(col => (
+                                    <td key={col.accessor} style={{ border: '1px solid #ddd', padding: '8px', whiteSpace: 'nowrap' }}>
+                                        {col.Cell ? col.Cell({ value: row[col.accessor], row }) : row[col.accessor]}
+                                    </td>
+                                ))}
+                            </tr>
+                            {expandedBBL === row.bbl && (
+                                <tr>
+                                    <td colSpan={columns.length} style={{ background: '#f8fafc', border: '1px solid #e2e8f0', padding: '12px 16px' }}>
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                            {row.signalBadges && row.signalBadges.length > 0 && (
+                                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                                                    {row.signalBadges.slice(0, 8).map((b, i) => (
+                                                        <span key={i} style={{ background: '#e2e8f0', color: '#334155', padding: '4px 8px', borderRadius: '999px', fontSize: '12px' }}>{b}</span>
+                                                    ))}
+                                                    {row.signalBadges.length > 8 && <span style={{ fontSize: '12px', color: '#64748b' }}>+{row.signalBadges.length - 8} more</span>}
+                                                </div>
+                                            )}
+                                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px' }}>
+                                                <div>
+                                                    <strong>Ownership</strong>
+                                                    <div>Owned: {typeof row.ownedYears === 'number' ? `${row.ownedYears} years` : row.tenureMonths ? `${Math.floor(row.tenureMonths/12)} years` : 'Unknown'}</div>
+                                                    <div>Last Deed Type: {row.lastDeedType || 'N/A'}</div>
+                                                    <div>Last Sale: {formatDate(row.lastSaleDate)}</div>
+                                                </div>
+                                                <div>
+                                                    <strong>DOB Jobs (12m)</strong>
+                                                    {row.dobJobs && row.dobJobs.length > 0 ? (
+                                                        <ul style={{ margin: 0, paddingLeft: '18px' }}>
+                                                            {row.dobJobs.slice(0, 3).map((j, idx) => (
+                                                                <li key={idx}>
+                                                                    {j.job_type || 'Job'} — {j.job_status || 'Status'} {j.filing_date ? `(${formatDate(j.filing_date)})` : ''}
+                                                                    {j._displayAddress ? ` — ${j._displayAddress}` : ''}
+                                                                </li>
+                                                            ))}
+                                                        </ul>
+                                                    ) : (
+                                                        <div>None</div>
+                                                    )}
+                                                </div>
+                                                <div>
+                                                    <strong>311 Complaints (30d)</strong>
+                                                    {row.complaints && row.complaints.length > 0 ? (
+                                                        <ul style={{ margin: 0, paddingLeft: '18px' }}>
+                                                            {row.complaints.slice(0, 3).map((c, idx) => (
+                                                                <li key={idx}>{c.complaint_type || 'Complaint'} {c.created_date ? `(${formatDate(c.created_date)})` : ''}</li>
+                                                            ))}
+                                                        </ul>
+                                                    ) : (
+                                                        <div>None</div>
+                                                    )}
+                                                </div>
+                                                <div>
+                                                    <strong>Development</strong>
+                                                    <div>Underbuilt FAR: {(() => {
+                                                        const pd = row.plutoData || {}; 
+                                                        const toNum = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
+                                                        const built = toNum(pd.builtfar); const allowed = Math.max(toNum(pd.residfar), toNum(pd.commfar), toNum(pd.facilfar));
+                                                        const rem = allowed - built; return rem > 0 ? rem.toFixed(1) : '0.0';
+                                                    })()}</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </td>
+                                </tr>
+                            )}
+                        </>
                     ))}
                 </tbody>
             </table>
