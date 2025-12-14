@@ -1,49 +1,94 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 
 const formatDate = (dateStr) => dateStr ? new Date(dateStr).toLocaleDateString() : 'N/A';
 
-const PropertyLeadsTable = ({ leads }) => {
-    // Set up filter state
+// Strategy filter configurations
+const strategies = [
+    { id: 'all', label: 'All Leads', icon: '📋', color: '#3b82f6' },
+    { id: 'high_score', label: 'High Score', icon: '🎯', color: '#f43f5e' },
+    { id: 'renovations', label: 'Fix & Flip', icon: '🔨', color: '#10b981' },
+    { id: 'complaints', label: 'Distressed', icon: '⚠️', color: '#f59e0b' },
+    { id: 'recent', label: 'Recent Sales', icon: '🏷️', color: '#8b5cf6' },
+];
+
+const strategyDescriptions = {
+    'all': "All properties in the selected area, sorted by likelihood score.",
+    'high_score': "Properties scoring 3.0+ with multiple strong seller signals detected.",
+    'renovations': "Active DOB permits suggest fix & flip or pre-sale improvements.",
+    'complaints': "311 complaints indicate potential owner fatigue or neglect.",
+    'recent': "Sold within 5 years - owners may be in investment or exit phase.",
+};
+
+const PropertyLeadsTable = ({ leads, onHoverLead, selectedBBL, onSelectLead }) => {
     const [activeFilter, setActiveFilter] = useState('all');
-    const [showStrategyExplanation, setShowStrategyExplanation] = useState(true);
-    const [expandedBBL, setExpandedBBL] = useState(null);
+    // Internal state for standalone usage, though likely not used in main app anymore
+    const [internalExpandedBBL, setInternalExpandedBBL] = useState(null);
+    const [sortConfig, setSortConfig] = useState({ key: 'score', direction: 'desc' });
     
-    // Filter functions for different strategies
+    // Use controlled state if provided, otherwise internal
+    const expandedBBL = selectedBBL !== undefined ? selectedBBL : internalExpandedBBL;
+    const handleExpand = (bbl) => {
+        const newBBL = expandedBBL === bbl ? null : bbl;
+        if (onSelectLead) {
+            onSelectLead(newBBL);
+        } else {
+            setInternalExpandedBBL(newBBL);
+        }
+    };
+    
     const filterStrategies = {
-        'all': (lead) => true,
+        'all': () => true,
         'renovations': (lead) => lead.permitsLast12Months && lead.permitsLast12Months > 0,
         'complaints': (lead) => lead.complaintsLast30Days && lead.complaintsLast30Days > 0,
         'recent': (lead) => lead.lastSaleDate && (new Date().getFullYear() - new Date(lead.lastSaleDate).getFullYear() <= 5),
         'high_score': (lead) => lead.score >= 3.0
     };
     
-    // Strategy explanations
-    const strategyExplanations = {
-        'all': "Showing all properties in the selected area without filtering.",
-        'renovations': "Properties with active DOB permits in the last 12 months - likely undergoing renovations that might indicate fix & flip activity.",
-        'complaints': "Properties with 311 complaints in the last 30 days - possibly neglected properties with management issues.",
-        'recent': "Properties sold within the last 5 years - owners may still be in investment phase or considering moves.",
-        'high_score': "Properties with a score of 3.0 or higher - our algorithm detected multiple strong signals of potential seller motivation."
-    };
+    // First filter, then sort
+    const filteredLeads = [...leads].filter(filterStrategies[activeFilter]);
     
-    // Apply active filter and sort by score
-    const filteredLeads = [...leads]
-        .filter(filterStrategies[activeFilter])
-        .sort((a, b) => b.score - a.score);
+    const sortedLeads = filteredLeads.sort((a, b) => {
+        const { key, direction } = sortConfig;
+        let valA = a[key];
+        let valB = b[key];
+        
+        // Handle specifics
+        if (key === 'lastSaleDate') {
+            valA = valA ? new Date(valA).getTime() : 0;
+            valB = valB ? new Date(valB).getTime() : 0;
+        }
+        
+        // Default numbers/strings
+        if (valA === valB) return 0;
+        if (valA === null || valA === undefined) return 1;
+        if (valB === null || valB === undefined) return -1;
+        
+        const result = valA < valB ? -1 : 1;
+        return direction === 'asc' ? result : -result;
+    });
+    
+    const handleSort = (key) => {
+        setSortConfig(current => ({
+            key,
+            direction: current.key === key && current.direction === 'desc' ? 'asc' : 'desc'
+        }));
+    };
     
     // Show the specific columns the user wants with improved formatting
     const columns = [
-        { accessor: 'bbl', Header: 'BBL' },
-        { accessor: 'address', Header: 'Address' },
+        { accessor: 'bbl', Header: 'BBL', sortable: true },
+        { accessor: 'address', Header: 'Address', sortable: true },
         { 
             accessor: 'score', 
             Header: 'Score', 
-            Cell: ({ value }) => <span style={{ fontWeight: 'bold', color: value >= 4.0 ? '#d32f2f' : value >= 3.0 ? '#f57c00' : '#2e7d32' }}>{value}</span>
+            sortable: true,
+            Cell: ({ value }) => <span style={{ fontWeight: 'bold', color: value >= 4.0 ? '#d32f2f' : value >= 3.0 ? '#f57c00' : '#2e7d32' }}>{value.toFixed(1)}</span>
         },
         // Highlight key motivation indicators
         { 
             accessor: 'topIndicator', 
             Header: 'Key Motivation', 
+            sortable: false,
             Cell: ({ row }) => {
                 // Determine the top motivation indicator based on available data
                 if (row.permitsLast12Months > 2) {
@@ -57,15 +102,16 @@ const PropertyLeadsTable = ({ leads }) => {
                 } else if (row.lastSaleDate && (new Date().getFullYear() - new Date(row.lastSaleDate).getFullYear() <= 2)) {
                     return <span style={{ color: '#1976d2', fontWeight: 'bold' }}>Recent Sale</span>;
                 }
-                return 'None detected';
+                return <span style={{ color: '#94a3b8' }}>None detected</span>;
             }
         },
-        { accessor: 'lastSaleDate', Header: 'Last Sale', Cell: ({ value }) => formatDate(value) },
-        { accessor: 'complaintsLast30Days', Header: 'Complaints 30d', Cell: ({ value }) => value || '0' },
-        { accessor: 'permitsLast12Months', Header: 'DOB Jobs 12m', Cell: ({ value }) => value || '0' },
+        { accessor: 'lastSaleDate', Header: 'Last Sale', sortable: true, Cell: ({ value }) => formatDate(value) },
+        { accessor: 'complaintsLast30Days', Header: 'Complaints 30d', sortable: true, Cell: ({ value }) => value || '0' },
+        { accessor: 'permitsLast12Months', Header: 'DOB Jobs 12m', sortable: true, Cell: ({ value }) => value || '0' },
         { 
             accessor: 'details', 
             Header: 'Property Details', 
+            sortable: false,
             Cell: ({ row }) => {
                 const details = [];
                 if (row.jobTypes && row.jobTypes.length > 0) {
@@ -84,297 +130,503 @@ const PropertyLeadsTable = ({ leads }) => {
         },
     ];
 
+    // Auto-scroll to selected row when it changes (e.g. from map selection)
+    useEffect(() => {
+        if (selectedBBL) {
+            const rowElement = document.getElementById(`lead-row-${selectedBBL}`);
+            if (rowElement) {
+                rowElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }
+    }, [selectedBBL]);
+
+    const activeStrategy = strategies.find(s => s.id === activeFilter) || strategies[0];
+    
     return (
         <div style={{ 
-            overflowX: 'auto', 
-            marginTop: '20px', 
-            backgroundColor: 'white', 
-            padding: '20px', 
+            background: 'white',
             borderRadius: '12px',
-            boxShadow: '0 3px 15px rgba(0,0,0,0.05)',
+            border: '1px solid #e2e8f0',
+            boxShadow: '0 4px 6px -1px rgba(0,0,0,0.05)',
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column',
+            height: '100%', // Fill parent
         }}>
-             <div style={{ 
-                display: 'flex', 
-                justifyContent: 'space-between', 
-                alignItems: 'flex-start', 
-                marginBottom: '16px',
-                flexWrap: 'wrap',
-                gap: '16px'
-             }}>
-                <h4 style={{ 
-                    margin: '6px 0', 
-                    fontSize: '1.2rem', 
-                    color: '#334155',
-                    fontWeight: '600'
-                }}>Property Leads ({filteredLeads.length} of {leads.length})</h4>
-                <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-                    <div style={{ marginRight: '15px' }}>
-                        <span style={{ fontWeight: '600', marginRight: '12px', color: '#334155' }}>Strategy:</span>
-                        <button 
-                            onClick={() => {
-                                setActiveFilter('all');
-                                setShowStrategyExplanation(true);
-                            }}
-                            style={{
-                                marginRight: '6px',
-                                backgroundColor: activeFilter === 'all' ? '#1976d2' : '#f8fafc',
-                                color: activeFilter === 'all' ? 'white' : '#475569',
-                                border: activeFilter === 'all' ? 'none' : '1px solid #e2e8f0',
-                                padding: '7px 12px',
-                                borderRadius: '6px',
-                                cursor: 'pointer',
-                                fontWeight: '500',
-                                fontSize: '0.9rem',
-                                transition: 'all 0.2s ease',
-                                boxShadow: activeFilter === 'all' ? '0 2px 5px rgba(25, 118, 210, 0.2)' : 'none'
-                            }}
-                        >
-                            All Leads
-                        </button>
-                        <button 
-                            onClick={() => {
-                                setActiveFilter('renovations');
-                                setShowStrategyExplanation(true);
-                            }}
-                            style={{
-                                marginRight: '6px',
-                                backgroundColor: activeFilter === 'renovations' ? '#2e7d32' : '#f8fafc',
-                                color: activeFilter === 'renovations' ? 'white' : '#475569',
-                                border: activeFilter === 'renovations' ? 'none' : '1px solid #e2e8f0',
-                                padding: '7px 12px',
-                                borderRadius: '6px',
-                                cursor: 'pointer',
-                                fontWeight: '500',
-                                fontSize: '0.9rem',
-                                transition: 'all 0.2s ease',
-                                boxShadow: activeFilter === 'renovations' ? '0 2px 5px rgba(46, 125, 50, 0.2)' : 'none'
-                            }}
-                        >
-                            Fix & Flip
-                        </button>
-                        <button 
-                            onClick={() => {
-                                setActiveFilter('complaints');
-                                setShowStrategyExplanation(true);
-                            }}
-                            style={{
-                                marginRight: '6px',
-                                backgroundColor: activeFilter === 'complaints' ? '#e53935' : '#f8fafc',
-                                color: activeFilter === 'complaints' ? 'white' : '#475569',
-                                border: activeFilter === 'complaints' ? 'none' : '1px solid #e2e8f0',
-                                padding: '7px 12px',
-                                borderRadius: '6px',
-                                cursor: 'pointer',
-                                fontWeight: '500',
-                                fontSize: '0.9rem',
-                                transition: 'all 0.2s ease',
-                                boxShadow: activeFilter === 'complaints' ? '0 2px 5px rgba(229, 57, 53, 0.2)' : 'none'
-                            }}
-                        >
-                            Neglected
-                        </button>
-                        <button 
-                            onClick={() => {
-                                setActiveFilter('recent');
-                                setShowStrategyExplanation(true);
-                            }}
-                            style={{
-                                marginRight: '6px',
-                                backgroundColor: activeFilter === 'recent' ? '#0288d1' : '#f8fafc',
-                                color: activeFilter === 'recent' ? 'white' : '#475569',
-                                border: activeFilter === 'recent' ? 'none' : '1px solid #e2e8f0',
-                                padding: '7px 12px',
-                                borderRadius: '6px',
-                                cursor: 'pointer',
-                                fontWeight: '500',
-                                fontSize: '0.9rem',
-                                transition: 'all 0.2s ease',
-                                boxShadow: activeFilter === 'recent' ? '0 2px 5px rgba(2, 136, 209, 0.2)' : 'none'
-                            }}
-                        >
-                            Recent Sales
-                        </button>
-                        <button 
-                            onClick={() => {
-                                setActiveFilter('high_score');
-                                setShowStrategyExplanation(true);
-                            }}
-                            style={{
-                                marginRight: '6px',
-                                backgroundColor: activeFilter === 'high_score' ? '#9c27b0' : '#f8fafc',
-                                color: activeFilter === 'high_score' ? 'white' : '#475569',
-                                border: activeFilter === 'high_score' ? 'none' : '1px solid #e2e8f0',
-                                padding: '7px 12px',
-                                borderRadius: '6px',
-                                cursor: 'pointer',
-                                fontWeight: '500',
-                                fontSize: '0.9rem',
-                                transition: 'all 0.2s ease',
-                                boxShadow: activeFilter === 'high_score' ? '0 2px 5px rgba(156, 39, 176, 0.2)' : 'none'
-                            }}
-                        >
-                            High Score
-                        </button>
-                    </div>
-                    {showStrategyExplanation && (
-                        <div style={{
-                            backgroundColor: '#f8faff',
-                            padding: '16px 20px',
-                            borderRadius: '10px',
-                            marginTop: '16px',
-                            marginBottom: '10px',
-                            fontSize: '0.95rem',
-                            color: '#334155',
-                            borderLeft: '4px solid',
-                            borderColor: activeFilter === 'renovations' ? '#2e7d32' : 
-                                       activeFilter === 'complaints' ? '#e53935' : 
-                                       activeFilter === 'recent' ? '#0288d1' : 
-                                       activeFilter === 'high_score' ? '#9c27b0' : '#1976d2',
-                            boxShadow: '0 3px 8px rgba(0,0,0,0.06)',
-                            lineHeight: '1.5',
-                            transition: 'all 0.3s ease'
-                        }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <strong style={{ fontSize: '1rem', color: '#1e293b' }}>
-                                    Strategy: {activeFilter.charAt(0).toUpperCase() + activeFilter.slice(1).replace('_', ' ')}
-                                </strong>
-                                <button 
-                                    onClick={() => setShowStrategyExplanation(false)}
-                                    style={{ 
-                                        background: 'none', 
-                                        border: 'none', 
-                                        cursor: 'pointer', 
-                                        color: '#64748b',
-                                        fontSize: '16px',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        width: '24px',
-                                        height: '24px',
-                                        borderRadius: '50%',
-                                        transition: 'background-color 0.2s ease'
-                                    }}
-                                    onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#f1f5f9'}
-                                    onMouseOut={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-                                >
-                                    ✕
-                                </button>
-                            </div>
-                            <p style={{ margin: '8px 0 0 0', lineHeight: '1.6' }}>{strategyExplanations[activeFilter]}</p>
-                        </div>
-                    )}
-                    <div>
-                        <button style={{ 
-                            padding: '8px 16px',
-                            backgroundColor: '#f8fafc',
-                            color: '#475569',
-                            border: '1px solid #e2e8f0',
-                            borderRadius: '6px',
-                            cursor: 'pointer',
-                            fontWeight: '500',
-                            fontSize: '0.9rem',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '6px',
-                            transition: 'all 0.2s ease',
-                            boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
-                        }}>
-                            <span style={{ fontSize: '14px' }}>↓</span> Export CSV
-                        </button>
-                    </div>
+            {/* Header */}
+            <div style={{
+                padding: '24px 32px',
+                borderBottom: '1px solid #e2e8f0',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexShrink: 0, // Prevent header from shrinking
+            }}>
+                <div>
+                    <h2 style={{ 
+                        margin: 0,
+                        fontSize: '1.25rem', 
+                        color: '#0f172a',
+                        fontWeight: '700',
+                        letterSpacing: '-0.025em',
+                        marginBottom: '4px',
+                    }}>
+                        Property Leads
+                    </h2>
+                    <p style={{
+                        margin: 0,
+                        color: '#64748b',
+                        fontSize: '0.875rem',
+                    }}>
+                        {filteredLeads.length} properties matched • Sorted by likelihood
+                    </p>
+                </div>
+                
+                <button style={{ 
+                    padding: '10px 16px',
+                    background: 'white',
+                    color: '#0f172a',
+                    border: '1px solid #e2e8f0',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    fontWeight: '600',
+                    fontSize: '0.875rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                    transition: 'all 0.2s ease',
+                }}>
+                    <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                    Export CSV
+                </button>
+            </div>
+            
+            {/* Strategy Filters */}
+            <div style={{
+                padding: '16px 32px',
+                background: '#f8fafc',
+                borderBottom: '1px solid #e2e8f0',
+                flexShrink: 0, // Prevent filters from shrinking
+            }}>
+                <div style={{ 
+                    display: 'flex', 
+                    gap: '12px',
+                    flexWrap: 'wrap',
+                    marginBottom: '16px',
+                }}>
+                    {strategies.map((strategy) => {
+                        const isActive = activeFilter === strategy.id;
+                        return (
+                            <button 
+                                key={strategy.id}
+                                onClick={() => setActiveFilter(strategy.id)}
+                                style={{
+                                    padding: '8px 16px',
+                                    borderRadius: '9999px',
+                                    border: isActive ? '1px solid transparent' : '1px solid #cbd5e1',
+                                    background: isActive ? '#0f172a' : 'white',
+                                    color: isActive ? 'white' : '#64748b',
+                                    cursor: 'pointer',
+                                    fontWeight: isActive ? '600' : '500',
+                                    fontSize: '0.875rem',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '6px',
+                                    transition: 'all 0.2s ease',
+                                    boxShadow: isActive ? '0 4px 6px -1px rgba(0, 0, 0, 0.1)' : 'none',
+                                }}
+                            >
+                                <span>{strategy.icon}</span>
+                                {strategy.label}
+                            </button>
+                        );
+                    })}
+                </div>
+                
+                {/* Strategy Description */}
+                <div style={{
+                    display: 'flex',
+                    alignItems: 'start',
+                    gap: '10px',
+                    padding: '12px',
+                    borderRadius: '8px',
+                    background: '#f1f5f9',
+                    border: '1px solid #e2e8f0',
+                    fontSize: '0.875rem',
+                    color: '#64748b',
+                }}>
+                    <span style={{ fontSize: '1.2em' }}>💡</span>
+                    <span>
+                        <strong style={{ color: '#0f172a', fontWeight: '600' }}>Strategy Insight:</strong> {strategyDescriptions[activeFilter]}
+                    </span>
                 </div>
             </div>
-            {filteredLeads.length === 0 ? 
-                <div style={{ padding: '20px', textAlign: 'center', backgroundColor: '#f9f9f9', borderRadius: '4px' }}>
-                    <p>No properties match the selected strategy filter. Try another filter or neighborhood.</p>
-                </div> : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9em' }}>
-                <thead>
-                    <tr style={{ backgroundColor: '#f0f0f0' }}>
-                        {columns.map(col => (
-                            <th key={col.Header} style={{ border: '1px solid #ddd', padding: '8px', textAlign: 'left' }}>{col.Header}</th>
-                        ))}
-                    </tr>
-                </thead>
-                <tbody>
-                    {filteredLeads.map((row, rowIndex) => (
-                        <>
-                            <tr
-                                key={row.bbl || rowIndex}
-                                onClick={() => setExpandedBBL(expandedBBL === row.bbl ? null : row.bbl)}
-                                style={{ backgroundColor: rowIndex % 2 ? '#f9f9f9' : '#fff', cursor: 'pointer' }}
-                                title="Click to view details"
-                            >
+            
+            {/* Table Content */}
+            {filteredLeads.length === 0 ? (
+                <div style={{ 
+                    padding: '64px 32px', 
+                    textAlign: 'center',
+                    flex: 1, // Fill remaining space
+                    display: 'flex',
+                    flexDirection: 'column',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                }}>
+                    <div style={{ fontSize: '48px', marginBottom: '16px' }}>🔍</div>
+                    <h3 style={{ 
+                        margin: '0 0 8px 0',
+                        color: '#0f172a',
+                        fontWeight: '600',
+                        fontSize: '1.125rem',
+                    }}>No Properties Found</h3>
+                    <p style={{ 
+                        color: '#64748b',
+                        margin: '0 0 24px 0',
+                        fontSize: '0.9375rem',
+                    }}>Try adjusting your filters or selecting a different neighborhood.</p>
+                    {activeFilter !== 'all' && (
+                        <button 
+                            onClick={() => setActiveFilter('all')}
+                            style={{
+                                padding: '8px 16px',
+                                background: 'white',
+                                border: '1px solid #cbd5e1',
+                                borderRadius: '6px',
+                                color: '#475569',
+                                fontWeight: '500',
+                                fontSize: '0.875rem',
+                                cursor: 'pointer',
+                                transition: 'all 0.2s ease',
+                            }}
+                        >
+                            Clear Filters
+                        </button>
+                    )}
+                </div>
+            ) : (
+                <div style={{ 
+                    overflowX: 'auto',
+                    flex: 1, // Fill remaining space
+                    overflowY: 'auto',
+                    scrollbarWidth: 'thin',
+                }}>
+                    <table style={{ 
+                        width: '100%', 
+                        borderCollapse: 'separate', // Required for sticky headers
+                        borderSpacing: 0,
+                        fontSize: '0.875rem',
+                    }}>
+                        <thead>
+                            <tr style={{ 
+                                background: '#f8fafc',
+                            }}>
                                 {columns.map(col => (
-                                    <td key={col.accessor} style={{ border: '1px solid #ddd', padding: '8px', whiteSpace: 'nowrap' }}>
-                                        {col.Cell ? col.Cell({ value: row[col.accessor], row }) : row[col.accessor]}
-                                    </td>
+                                    <th 
+                                        key={col.Header} 
+                                        onClick={() => col.sortable && handleSort(col.accessor)}
+                                        style={{ 
+                                            position: 'sticky',
+                                            top: 0,
+                                            zIndex: 10,
+                                            background: '#f8fafc',
+                                            padding: '16px 24px',
+                                            textAlign: 'left',
+                                            fontWeight: '600',
+                                            color: sortConfig.key === col.accessor ? '#0f172a' : '#475569',
+                                            fontSize: '0.75rem',
+                                            textTransform: 'uppercase',
+                                            letterSpacing: '0.05em',
+                                            whiteSpace: 'nowrap',
+                                            borderBottom: '1px solid #e2e8f0',
+                                            boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                                            cursor: col.sortable ? 'pointer' : 'default',
+                                            userSelect: 'none',
+                                            transition: 'color 0.2s ease',
+                                        }}
+                                    >
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                            {col.Header}
+                                            {col.sortable && (
+                                                <span style={{ 
+                                                    fontSize: '1rem',
+                                                    lineHeight: 1,
+                                                    color: sortConfig.key === col.accessor ? '#3b82f6' : '#cbd5e1' 
+                                                }}>
+                                                    {sortConfig.key === col.accessor 
+                                                        ? (sortConfig.direction === 'asc' ? '↑' : '↓')
+                                                        : '↕'}
+                                                </span>
+                                            )}
+                                        </div>
+                                    </th>
                                 ))}
                             </tr>
-                            {expandedBBL === row.bbl && (
-                                <tr>
-                                    <td colSpan={columns.length} style={{ background: '#f8fafc', border: '1px solid #e2e8f0', padding: '12px 16px' }}>
-                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                                            {row.signalBadges && row.signalBadges.length > 0 && (
-                                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-                                                    {row.signalBadges.slice(0, 8).map((b, i) => (
-                                                        <span key={i} style={{ background: '#e2e8f0', color: '#334155', padding: '4px 8px', borderRadius: '999px', fontSize: '12px' }}>{b}</span>
-                                                    ))}
-                                                    {row.signalBadges.length > 8 && <span style={{ fontSize: '12px', color: '#64748b' }}>+{row.signalBadges.length - 8} more</span>}
-                                                </div>
-                                            )}
-                                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px' }}>
-                                                <div>
-                                                    <strong>Ownership</strong>
-                                                    <div>Owned: {typeof row.ownedYears === 'number' ? `${row.ownedYears} years` : row.tenureMonths ? `${Math.floor(row.tenureMonths/12)} years` : 'Unknown'}</div>
-                                                    <div>Last Deed Type: {row.lastDeedType || 'N/A'}</div>
-                                                    <div>Last Sale: {formatDate(row.lastSaleDate)}</div>
-                                                </div>
-                                                <div>
-                                                    <strong>DOB Jobs (12m)</strong>
-                                                    {row.dobJobs && row.dobJobs.length > 0 ? (
-                                                        <ul style={{ margin: 0, paddingLeft: '18px' }}>
-                                                            {row.dobJobs.slice(0, 3).map((j, idx) => (
-                                                                <li key={idx}>
-                                                                    {j.job_type || 'Job'} — {j.job_status || 'Status'} {j.filing_date ? `(${formatDate(j.filing_date)})` : ''}
-                                                                    {j._displayAddress ? ` — ${j._displayAddress}` : ''}
-                                                                </li>
+                        </thead>
+                        <tbody>
+                            {filteredLeads.map((row, rowIndex) => (
+                                <React.Fragment key={row.bbl || rowIndex}>
+                                    <tr
+                                        onClick={() => handleExpand(row.bbl)}
+                                        style={{ 
+                                            background: expandedBBL === row.bbl ? '#eff6ff' : 'white',
+                                            cursor: 'pointer',
+                                            borderBottom: '1px solid #f1f5f9',
+                                            transition: 'background 0.15s ease',
+                                        }}
+                                        onMouseEnter={(e) => {
+                                            if (expandedBBL !== row.bbl) e.currentTarget.style.background = '#f8fafc';
+                                            if (onHoverLead) onHoverLead(row.bbl);
+                                        }}
+                                        onMouseLeave={(e) => {
+                                            if (expandedBBL !== row.bbl) e.currentTarget.style.background = 'white';
+                                            if (onHoverLead) onHoverLead(null);
+                                        }}
+                                        id={`lead-row-${row.bbl}`} // Add ID for scrolling
+                                    >
+                                        {columns.map(col => (
+                                            <td key={col.accessor} style={{ 
+                                                padding: '16px 24px',
+                                                color: '#334155',
+                                                whiteSpace: 'nowrap',
+                                                verticalAlign: 'middle',
+                                            }}>
+                                                {col.Cell ? col.Cell({ value: row[col.accessor], row }) : row[col.accessor]}
+                                            </td>
+                                        ))}
+                                    </tr>
+                                    
+                                    {/* Expanded Details Row */}
+                                    {expandedBBL === row.bbl && (
+                                        <tr>
+                                            <td colSpan={columns.length} style={{ 
+                                                padding: 0,
+                                                background: '#f8fafc',
+                                                boxShadow: 'inset 0 4px 6px -4px rgba(0,0,0,0.1)',
+                                            }}>
+                                                <div style={{ 
+                                                    padding: '24px 32px',
+                                                    borderBottom: '1px solid #e2e8f0',
+                                                }}>
+                                                    {/* Signal Badges */}
+                                                    {row.signalBadges && row.signalBadges.length > 0 && (
+                                                        <div style={{ 
+                                                            display: 'flex', 
+                                                            flexWrap: 'wrap', 
+                                                            gap: '8px',
+                                                            marginBottom: '24px',
+                                                        }}>
+                                                            {row.signalBadges.slice(0, 10).map((badge, i) => (
+                                                                <span key={i} style={{ 
+                                                                    background: 'white',
+                                                                    color: '#475569',
+                                                                    padding: '6px 12px',
+                                                                    borderRadius: '6px',
+                                                                    fontSize: '0.75rem',
+                                                                    fontWeight: '500',
+                                                                    border: '1px solid #e2e8f0',
+                                                                    boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                                                                }}>
+                                                                    {badge}
+                                                                </span>
                                                             ))}
-                                                        </ul>
-                                                    ) : (
-                                                        <div>None</div>
+                                                            {row.signalBadges.length > 10 && (
+                                                                <span style={{ fontSize: '0.75rem', color: '#64748b', alignSelf: 'center' }}>
+                                                                    +{row.signalBadges.length - 10} more signals
+                                                                </span>
+                                                            )}
+                                                        </div>
                                                     )}
+                                                    
+                                                    {/* Details Grid */}
+                                                    <div style={{ 
+                                                        display: 'grid', 
+                                                        gridTemplateColumns: 'repeat(4, 1fr)', 
+                                                        gap: '24px',
+                                                    }}>
+                                                        {/* Ownership */}
+                                                        <div style={{
+                                                            background: 'white',
+                                                            borderRadius: '8px',
+                                                            padding: '20px',
+                                                            border: '1px solid #e2e8f0',
+                                                        }}>
+                                                            <div style={{ 
+                                                                fontWeight: '600',
+                                                                color: '#3b82f6',
+                                                                fontSize: '0.8125rem',
+                                                                marginBottom: '12px',
+                                                                textTransform: 'uppercase',
+                                                                letterSpacing: '0.05em',
+                                                            }}>
+                                                                Ownership Profile
+                                                            </div>
+                                                            <div style={{ fontSize: '0.875rem', color: '#334155', lineHeight: 1.6, display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                                                    <span style={{ color: '#64748b' }}>Held For</span>
+                                                                    <span style={{ fontWeight: '500' }}>{typeof row.ownedYears === 'number' ? `${row.ownedYears} yrs` : row.tenureMonths ? `${Math.floor(row.tenureMonths/12)} yrs` : 'Unknown'}</span>
+                                                                </div>
+                                                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                                                    <span style={{ color: '#64748b' }}>Deed Type</span>
+                                                                    <span style={{ fontWeight: '500' }}>{row.lastDeedType || 'N/A'}</span>
+                                                                </div>
+                                                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                                                    <span style={{ color: '#64748b' }}>Last Sale</span>
+                                                                    <span style={{ fontWeight: '500' }}>{formatDate(row.lastSaleDate)}</span>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        
+                                                        {/* DOB Jobs */}
+                                                        <div style={{
+                                                            background: 'white',
+                                                            borderRadius: '8px',
+                                                            padding: '20px',
+                                                            border: '1px solid #e2e8f0',
+                                                        }}>
+                                                            <div style={{ 
+                                                                fontWeight: '600',
+                                                                color: '#10b981',
+                                                                fontSize: '0.8125rem',
+                                                                marginBottom: '12px',
+                                                                textTransform: 'uppercase',
+                                                                letterSpacing: '0.05em',
+                                                            }}>
+                                                                Permits & Jobs
+                                                            </div>
+                                                            {row.dobJobs && row.dobJobs.length > 0 ? (
+                                                                <div style={{ fontSize: '0.875rem', color: '#334155', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                                                    {row.dobJobs.slice(0, 3).map((j, idx) => (
+                                                                        <div key={idx} style={{ 
+                                                                            paddingBottom: idx < 2 ? '8px' : '0',
+                                                                            borderBottom: idx < 2 ? '1px solid #f1f5f9' : 'none'
+                                                                        }}>
+                                                                            <div style={{ fontWeight: '500' }}>{j.job_type || 'Job'}</div>
+                                                                            <div style={{ fontSize: '0.75rem', color: '#64748b' }}>{j.job_status || 'Status'}</div>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            ) : (
+                                                                <div style={{ color: '#94a3b8', fontSize: '0.875rem', fontStyle: 'italic' }}>No active permits found</div>
+                                                            )}
+                                                        </div>
+                                                        
+                                                        {/* Issues */}
+                                                        <div style={{
+                                                            background: 'white',
+                                                            borderRadius: '8px',
+                                                            padding: '20px',
+                                                            border: '1px solid #e2e8f0',
+                                                        }}>
+                                                            <div style={{ 
+                                                                fontWeight: '600',
+                                                                color: '#f59e0b',
+                                                                fontSize: '0.8125rem',
+                                                                marginBottom: '12px',
+                                                                textTransform: 'uppercase',
+                                                                letterSpacing: '0.05em',
+                                                            }}>
+                                                                Violations
+                                                            </div>
+                                                            <div style={{ fontSize: '0.875rem', color: '#334155', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                                                    <span style={{ color: '#64748b' }}>311 (30d)</span>
+                                                                    <span style={{ fontWeight: '500', color: row.complaintsLast30Days > 0 ? '#ef4444' : 'inherit' }}>{row.complaintsLast30Days || 0}</span>
+                                                                </div>
+                                                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                                                    <span style={{ color: '#64748b' }}>HPD Total</span>
+                                                                    <span style={{ fontWeight: '500', color: row.totalHpdViolations > 0 ? '#ef4444' : 'inherit' }}>{row.totalHpdViolations || 0}</span>
+                                                                </div>
+                                                                {row.hpdClassC > 0 && (
+                                                                    <div style={{ display: 'flex', justifyContent: 'space-between', background: '#fef2f2', padding: '4px 8px', borderRadius: '4px', marginTop: '4px' }}>
+                                                                        <span style={{ color: '#dc2626', fontSize: '0.75rem', fontWeight: '600' }}>Class C Hazardous</span>
+                                                                        <span style={{ fontWeight: '700', color: '#dc2626' }}>{row.hpdClassC}</span>
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                        
+                                                        {/* Owner & Potential */}
+                                                        <div style={{
+                                                            background: 'white',
+                                                            borderRadius: '8px',
+                                                            padding: '20px',
+                                                            border: '1px solid #e2e8f0',
+                                                        }}>
+                                                            <div style={{ 
+                                                                fontWeight: '600',
+                                                                color: '#8b5cf6',
+                                                                fontSize: '0.8125rem',
+                                                                marginBottom: '12px',
+                                                                textTransform: 'uppercase',
+                                                                letterSpacing: '0.05em',
+                                                            }}>
+                                                                Owner & Potential
+                                                            </div>
+                                                            <div style={{ fontSize: '0.875rem', color: '#334155', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                                                    <span style={{ color: '#64748b' }}>Unused FAR</span>
+                                                                    <span style={{ fontWeight: '500' }}>{(() => {
+                                                                        const pd = row.plutoData || {}; 
+                                                                        const toNum = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
+                                                                        const built = toNum(pd.builtfar); 
+                                                                        const allowed = Math.max(toNum(pd.residfar), toNum(pd.commfar), toNum(pd.facilfar));
+                                                                        const rem = allowed - built; 
+                                                                        return rem > 0 ? rem.toFixed(1) : '0.0';
+                                                                    })()}</span>
+                                                                </div>
+                                                                {row.ownerPortfolioSize > 1 && (
+                                                                    <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px solid #f1f5f9' }}>
+                                                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                                                                            <span style={{ fontSize: '0.75rem', color: '#64748b' }}>Portfolio in View</span>
+                                                                            <span style={{ fontWeight: '600', color: '#8b5cf6', fontSize: '0.8125rem' }}>{row.ownerPortfolioSize} Properties</span>
+                                                                        </div>
+                                                                        <div style={{ 
+                                                                            maxHeight: '120px', 
+                                                                            overflowY: 'auto',
+                                                                            fontSize: '0.75rem',
+                                                                            color: '#475569',
+                                                                            border: '1px solid #f1f5f9',
+                                                                            borderRadius: '6px',
+                                                                            background: '#f8fafc'
+                                                                        }}>
+                                                                            {row.ownerPortfolioBBLs && row.ownerPortfolioBBLs
+                                                                                .filter(bbl => bbl !== row.bbl)
+                                                                                .map(bbl => {
+                                                                                    const peer = leads.find(l => l.bbl === bbl);
+                                                                                    return (
+                                                                                        <div key={bbl} style={{ 
+                                                                                            padding: '6px 8px',
+                                                                                            borderBottom: '1px solid #f1f5f9',
+                                                                                            display: 'flex',
+                                                                                            justifyContent: 'space-between'
+                                                                                        }}>
+                                                                                            <span style={{ fontWeight: '500' }}>{peer ? peer.address : bbl}</span>
+                                                                                            {peer && peer.score >= 3.0 && (
+                                                                                                <span style={{ color: '#ef4444' }}>★ {peer.score}</span>
+                                                                                            )}
+                                                                                        </div>
+                                                                                    );
+                                                                                })
+                                                                            }
+                                                                        </div>
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    </div>
                                                 </div>
-                                                <div>
-                                                    <strong>311 Complaints (30d)</strong>
-                                                    {row.complaints && row.complaints.length > 0 ? (
-                                                        <ul style={{ margin: 0, paddingLeft: '18px' }}>
-                                                            {row.complaints.slice(0, 3).map((c, idx) => (
-                                                                <li key={idx}>{c.complaint_type || 'Complaint'} {c.created_date ? `(${formatDate(c.created_date)})` : ''}</li>
-                                                            ))}
-                                                        </ul>
-                                                    ) : (
-                                                        <div>None</div>
-                                                    )}
-                                                </div>
-                                                <div>
-                                                    <strong>Development</strong>
-                                                    <div>Underbuilt FAR: {(() => {
-                                                        const pd = row.plutoData || {}; 
-                                                        const toNum = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
-                                                        const built = toNum(pd.builtfar); const allowed = Math.max(toNum(pd.residfar), toNum(pd.commfar), toNum(pd.facilfar));
-                                                        const rem = allowed - built; return rem > 0 ? rem.toFixed(1) : '0.0';
-                                                    })()}</div>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </td>
-                                </tr>
-                            )}
-                        </>
-                    ))}
-                </tbody>
-            </table>
+                                            </td>
+                                        </tr>
+                                    )}
+                                </React.Fragment>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
             )}
         </div>
     );

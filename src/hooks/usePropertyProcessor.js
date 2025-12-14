@@ -10,6 +10,13 @@ const LEGALS_ENDPOINT = 'https://data.cityofnewyork.us/resource/8h5j-fqxa.json';
 const MASTER_ENDPOINT = 'https://data.cityofnewyork.us/resource/bnx9-e6tj.json'; // ACRIS Master
 const DOBJOBS_ENDPOINT = 'https://data.cityofnewyork.us/resource/hir8-3a8d.json'; // DOB Jobs
 const THREEONEONE_ENDPOINT = 'https://data.cityofnewyork.us/resource/erm2-nwe9.json'; // 311 Complaints
+const MORTGAGE_ENDPOINT = 'https://data.cityofnewyork.us/resource/qjp4-ri2f.json'; // ACRIS Mortgages
+const HPD_VIOLATIONS_ENDPOINT = 'https://data.cityofnewyork.us/resource/wvxf-dwi5.json'; // HPD Violations
+const HPD_REGISTRATIONS_ENDPOINT = 'https://data.cityofnewyork.us/resource/tesw-yqqr.json'; // HPD Registrations (owner info)
+const DOB_PERMITS_ENDPOINT = 'https://data.cityofnewyork.us/resource/ipu4-2q9a.json'; // DOB Permit Issuance
+
+// Estate/Executor deed types to detect inheritance sales
+const ESTATE_DEED_TYPES = ['EXECUTOR', 'EXECUTRIX', 'ADMIN', 'ADMINISTRATOR', 'ESTATE', 'HEIR', 'DEVISEE', 'SURV', 'SURVIVOR'];
 
 // --- Helper Functions ---
 function makeBBL(boroughCode, block, lot) {
@@ -315,20 +322,24 @@ export function usePropertyProcessor(selectedBorough, selection) {
             let page = 0;
             let offset = 0;
             console.log('Fetching PLUTO with server-side where:', whereClause || '(none)');
+            setProgress(p => ({ ...p, pluto: 'fetching page 1...' }));
             try {
                 while (true) {
                     const params = { $limit: PAGE_LIMIT, $offset: offset };
                     if (whereClause) params.$where = whereClause;
-                    const res = await axios.get(PLUTO_ENDPOINT, { params });
+                    const res = await axios.get(PLUTO_ENDPOINT, { params, timeout: 60000 }); // 60s timeout
                     const rows = res.data || [];
                     plutoDataRaw = plutoDataRaw.concat(rows);
-                    console.log(`PLUTO page ${++page}: received ${rows.length} rows (total: ${plutoDataRaw.length})`);
+                    page++;
+                    console.log(`PLUTO page ${page}: received ${rows.length} rows (total: ${plutoDataRaw.length})`);
+                    setProgress(p => ({ ...p, pluto: `page ${page}: ${plutoDataRaw.length} records...` }));
                     if (rows.length < PAGE_LIMIT) break; // last page reached
                     offset += PAGE_LIMIT;
                     // Small delay to be nice to the API
                     await new Promise(r => setTimeout(r, 100));
                 }
                 console.log('PLUTO data received total:', plutoDataRaw.length, 'records');
+                setProgress(p => ({ ...p, pluto: `${plutoDataRaw.length} records loaded` }));
                 
                 // Debug the PLUTO data structure
                 if (plutoDataRaw.length > 0) {
@@ -497,118 +508,102 @@ export function usePropertyProcessor(selectedBorough, selection) {
             const bblBatches = createBblBatches(targetBBLs);
             console.log(`Created ${bblBatches.length} BBL batches for targeted queries`);
             
-            // Fetch ACRIS Legals data using the target BBLs
-            console.log('Fetching ACRIS Legals for target BBLs');
+            // Fetch ACRIS data using a SIMPLER approach: query Master directly by borough for recent deeds
+            // This avoids the Legals→Master join which creates too many batches
+            console.log('Fetching ACRIS Master deeds directly by block');
             let allLegalsInArea = [];
             const docIdToBblMap = {};
+            let deedMasterRecords = [];
             
-            setProgress(p => ({ ...p, acris: 'fetching legals by BBLs...' }));
+            setProgress(p => ({ ...p, acris: 'fetching all deeds...' }));
             
             try {
-                // Process each batch to avoid overwhelming the API
-                for (let batchIndex = 0; batchIndex < bblBatches.length; batchIndex++) {
-                    const batch = bblBatches[batchIndex];
+                // Extract unique blocks from our properties
+                const uniqueBlocks = [...new Set(Object.keys(properties).map(bbl => {
+                    return parseInt(bbl.substring(1, 6), 10).toString(); // Unpadded block number
+                }))];
+                
+                console.log(`Fetching ALL deeds for ${uniqueBlocks.length} blocks (no date filter)`);
+                
+                // Batch blocks for Master query
+                const BLOCK_BATCH_SIZE = 20;
+                for (let i = 0; i < uniqueBlocks.length; i += BLOCK_BATCH_SIZE) {
+                    const blockBatch = uniqueBlocks.slice(i, i + BLOCK_BATCH_SIZE);
+                    if (i % 60 === 0) console.log(`Fetching ACRIS deeds batch ${Math.floor(i/BLOCK_BATCH_SIZE) + 1}/${Math.ceil(uniqueBlocks.length/BLOCK_BATCH_SIZE)}`);
                     
-                    // Create BBL components for ACRIS query ($where needs borough, block, lot)
-                    const bblQueryParts = batch.map(bbl => {
-                        const borough = bbl.substring(0, 1);
-                        const block = parseInt(bbl.substring(1, 6), 10).toString();
-                        const lot = parseInt(bbl.substring(6, 10), 10).toString();
-                        // ACRIS Legals stores borough/block/lot as text; use string comparisons
-                        return `(borough='${borough}' AND block='${block}' AND lot='${lot}')`;
-                    });
+                    // Query Legals by block to get document IDs, then we'll fetch Master
+                    const blockClauses = blockBatch.map(b => `block='${b}'`).join(' OR ');
+                    const where = `borough='${acrisBoroughCode}' AND (${blockClauses})`;
                     
-                    const bblQueryString = bblQueryParts.join(' OR ');
-                    
-                    // Only proceed if we have a valid query
-                    if (bblQueryString) {
-                        try {
-                            console.log(`Fetching ACRIS Legals batch ${batchIndex + 1}/${bblBatches.length}`);
-                            const legalsRes = await axios.get(LEGALS_ENDPOINT, {
-                                params: {
-                                    $where: bblQueryString,
-                                    $limit: 100 * batch.length // Adjust limit based on batch size
+                    try {
+                        const legalsRes = await axios.get(LEGALS_ENDPOINT, {
+                            params: { $where: where, $limit: 50000, $select: 'document_id,borough,block,lot' }
+                        });
+                        
+                        // Map document IDs to BBLs
+                        legalsRes.data.forEach(legal => {
+                            const legalBbl = makeBBL(legal.borough, legal.block, legal.lot);
+                            if (legalBbl && properties[legalBbl]) {
+                                if (!docIdToBblMap[legal.document_id]) {
+                                    docIdToBblMap[legal.document_id] = [];
                                 }
-                            });
-                            
-                            allLegalsInArea = [...allLegalsInArea, ...legalsRes.data];
-                            console.log(`Batch ${batchIndex + 1}: Got ${legalsRes.data.length} ACRIS Legals records`);
-                            
-                            // Add a small delay between batches to avoid rate limiting
-                            if (batchIndex < bblBatches.length - 1) {
-                                await new Promise(resolve => setTimeout(resolve, 100));
+                                if (!docIdToBblMap[legal.document_id].includes(legalBbl)) {
+                                    docIdToBblMap[legal.document_id].push(legalBbl);
+                                }
                             }
-                        } catch (err) {
-                            console.error(`Error fetching ACRIS Legals batch ${batchIndex + 1}:`, err.message);
-                        }
+                        });
+                        
+                        allLegalsInArea = [...allLegalsInArea, ...legalsRes.data];
+                    } catch (err) {
+                        console.error(`Error fetching Legals block batch:`, err.message);
+                    }
+                    
+                    if (i + BLOCK_BATCH_SIZE < uniqueBlocks.length) {
+                        await new Promise(resolve => setTimeout(resolve, 80));
                     }
                 }
                 
                 console.log('ACRIS Legals received:', allLegalsInArea.length);
-                setProgress(p => ({ ...p, acris: `${allLegalsInArea.length} legals fetched` }));
-                
-                // Create a map of document_id to BBL from Legals for properties we care about
-                allLegalsInArea.forEach(legal => {
-                    const legalBbl = makeBBL(legal.borough, legal.block, legal.lot);
-                    if (legalBbl && properties[legalBbl]) {
-                        if (!docIdToBblMap[legal.document_id]) {
-                            docIdToBblMap[legal.document_id] = [];
-                        }
-                        docIdToBblMap[legal.document_id].push(legalBbl);
-                    }
-                });
-            } catch (err) {
-                console.error('Error in ACRIS Legals processing:', err.message);
-                setProgress(p => ({ ...p, acris: `Error: ${err.message}` }));
-            }
-            console.log('Relevant document IDs found:', Object.keys(docIdToBblMap).length);
-
-            // Fetch Master records for the specific document IDs we found in Legals
-            console.log('Relevant document IDs found:', Object.keys(docIdToBblMap).length);
-            
-            let deedMasterRecords = [];
-            
-            if (Object.keys(docIdToBblMap).length > 0) {
+                console.log('Unique document IDs:', Object.keys(docIdToBblMap).length);
                 setProgress(p => ({ ...p, acris: `${allLegalsInArea.length} legals, fetching deeds...` }));
                 
-                // Batch the document IDs for the Master query
-                const docIdBatches = createBblBatches(Object.keys(docIdToBblMap), 50);
+                // Now fetch Master records - but ONLY for deed types and limit batches
+                const docIds = Object.keys(docIdToBblMap);
+                const DOC_BATCH_SIZE = 100; // Larger batches
+                const MAX_BATCHES = 50; // Cap at 50 batches to avoid 20+ min waits
+                const batchCount = Math.min(Math.ceil(docIds.length / DOC_BATCH_SIZE), MAX_BATCHES);
                 
-                for (let batchIndex = 0; batchIndex < docIdBatches.length; batchIndex++) {
-                    const batch = docIdBatches[batchIndex];
-                    const docIdQueryParts = batch.map(docId => `document_id='${docId}'`);
-                    const docIdQueryString = docIdQueryParts.join(' OR ');
+                for (let i = 0; i < Math.min(docIds.length, MAX_BATCHES * DOC_BATCH_SIZE); i += DOC_BATCH_SIZE) {
+                    const batch = docIds.slice(i, i + DOC_BATCH_SIZE);
+                    if (i % 500 === 0) console.log(`Fetching ACRIS Master batch ${Math.floor(i/DOC_BATCH_SIZE) + 1}/${batchCount}`);
+                    
+                    const docIdList = batch.map(id => `'${id}'`).join(',');
+                    const where = `document_id IN(${docIdList}) AND doc_type='DEED'`;
                     
                     try {
-                        console.log(`Fetching ACRIS Master batch ${batchIndex + 1}/${docIdBatches.length}`);
                         const masterRes = await axios.get(MASTER_ENDPOINT, {
-                            params: {
-                                $where: `(${docIdQueryString}) AND doc_type='DEED'`,
-                                $limit: 100 * batch.length
-                            }
+                            params: { $where: where, $limit: 5000 }
                         });
-                        
                         deedMasterRecords = [...deedMasterRecords, ...masterRes.data];
-                        console.log(`Batch ${batchIndex + 1}: Got ${masterRes.data.length} ACRIS Master records`);
-                        
-                        // Add a small delay between batches
-                        if (batchIndex < docIdBatches.length - 1) {
-                            await new Promise(resolve => setTimeout(resolve, 100));
-                        }
                     } catch (err) {
-                        console.error(`Error fetching ACRIS Master batch ${batchIndex + 1}:`, err.message);
+                        console.error(`Error fetching Master batch:`, err.message);
+                    }
+                    
+                    if (i + DOC_BATCH_SIZE < docIds.length) {
+                        await new Promise(resolve => setTimeout(resolve, 80));
                     }
                 }
                 
-                console.log('ACRIS Master records received:', deedMasterRecords.length);
-                setProgress(p => ({ ...p, acris: `${allLegalsInArea.length} legals, ${deedMasterRecords.length} deeds fetched` }));
-            } else {
-                console.log('No document IDs found, skipping Master records fetch');
-                setProgress(p => ({ ...p, acris: 'No matching document IDs found' }));
+                console.log('ACRIS Master deeds received:', deedMasterRecords.length);
+                setProgress(p => ({ ...p, acris: `${allLegalsInArea.length} legals, ${deedMasterRecords.length} deeds` }));
+            } catch (err) {
+                console.error('Error in ACRIS processing:', err.message);
+                setProgress(p => ({ ...p, acris: `Error: ${err.message}` }));
             }
-            
+
             // Match deed records to properties via the document_id → BBL map
             let salesMatchCount = 0;
+            let estateDeeds = 0;
             deedMasterRecords.forEach(master => {
                 if (docIdToBblMap[master.document_id]) {
                     docIdToBblMap[master.document_id].forEach(bblKey => {
@@ -619,249 +614,387 @@ export function usePropertyProcessor(selectedBorough, selection) {
                             if (!prop.lastSaleDate || saleDate > new Date(prop.lastSaleDate)) {
                                 prop.lastSaleDate = master.document_date;
                                 prop.lastDeedType = master.doc_type || null;
-                                prop.documentId = master.document_id; // Store document ID for reference
+                                prop.documentId = master.document_id;
+                                prop.documentAmount = master.document_amt;
                                 salesMatchCount++;
+                                
+                                // Detect estate/executor deeds (inheritance indicator)
+                                const docType = (master.doc_type || '').toUpperCase();
+                                const isEstateDeed = ESTATE_DEED_TYPES.some(type => docType.includes(type));
+                                if (isEstateDeed) {
+                                    prop.isEstateDeed = true;
+                                    prop.estateDeedType = master.doc_type;
+                                    estateDeeds++;
+                                }
                             }
+                            
+                            // Store all deeds for the property (for history view)
+                            prop.allDeeds = prop.allDeeds || [];
+                            prop.allDeeds.push({
+                                date: master.document_date,
+                                type: master.doc_type,
+                                amount: master.document_amt,
+                                documentId: master.document_id
+                            });
                         }
                     });
                 }
             });
             console.log('Properties with sales data matched:', salesMatchCount);
+            console.log('Estate/executor deeds detected:', estateDeeds);
 
-            // Build address index for PLUTO properties to match DOB jobs by address
-            const addressIndex = {};
-            Object.keys(properties).forEach(bbl => {
-                const p = properties[bbl];
-                // Prefer explicit components if present
-                let house = p.plutoData?.housenum || p.plutoData?.housenumber || null;
-                let street = p.plutoData?.stname || p.plutoData?.street || null;
-                if ((!house || !street) && p.address) {
-                    const parts = String(p.address).trim().split(/\s+/);
-                    if (parts.length > 1) {
-                        house = parts[0];
-                        street = parts.slice(1).join(' ');
-                    }
-                }
-                const key = normalizeAddressParts(house, street);
-                if (key) {
-                    if (!addressIndex[key]) addressIndex[key] = [];
-                    addressIndex[key].push(bbl);
-                }
-            });
-            
-            // 3. Fetch DOB Jobs data (address-based batching to avoid SoQL issues with block IN)
+            // 3. Fetch DOB Jobs data by BLOCK (much faster than address-based queries)
             setProgress(p => ({ ...p, dob: 'loading...' }));
             try {
-                console.log('Fetching DOB Jobs by address');
+                console.log('Fetching DOB Jobs by block');
                 let allDobJobs = [];
-                const boroughText = Object.keys(boroughTextToNumeric).find(k => boroughTextToNumeric[k] === acrisBoroughCode) || 'MANHATTAN';
-                const addrKeys = Object.keys(addressIndex);
-                const ADDR_BATCH_SIZE = 20;
-                for (let i = 0; i < addrKeys.length; i += ADDR_BATCH_SIZE) {
-                    const batchKeys = addrKeys.slice(i, i + ADDR_BATCH_SIZE);
-                    console.log(`Fetching DOB Jobs addresses ${i + 1}-${Math.min(i + ADDR_BATCH_SIZE, addrKeys.length)}/${addrKeys.length}`);
-                    const clauses = batchKeys.map(k => {
-                        const parts = k.split(' ');
-                        const house = parts.shift();
-                        const street = parts.join(' ');
-                        const safeHouse = house.replace(/'/g, "''");
-                        const safeStreet = street.replace(/'/g, "''");
-                        const safeStreetU = safeStreet.toUpperCase();
-                        return `((upper(street_name)='${safeStreetU}' OR upper(streetname)='${safeStreetU}') AND (house__='${safeHouse}' OR house='${safeHouse}' OR houseno='${safeHouse}' OR house_number='${safeHouse}'))`;
-                    });
-                    const where = `(borough='${boroughText}' OR borough=${acrisBoroughCode}) AND (${clauses.join(' OR ')})`;
+                
+                // DOB Jobs uses text borough names, not numeric codes
+                const boroughCodeToText = { '1': 'MANHATTAN', '2': 'BRONX', '3': 'BROOKLYN', '4': 'QUEENS', '5': 'STATEN ISLAND' };
+                const dobBoroughText = boroughCodeToText[acrisBoroughCode] || 'MANHATTAN';
+                
+                // Extract unique blocks from our PLUTO properties
+                // DOB Jobs stores block as 5-digit zero-padded strings (e.g., '00955')
+                const uniqueBlocks = [...new Set(Object.keys(properties).map(bbl => {
+                    return bbl.substring(1, 6); // Already 5-digit padded in our BBL format
+                }))];
+                console.log(`Found ${uniqueBlocks.length} unique blocks to query for ${dobBoroughText}`);
+                
+                const BLOCK_BATCH_SIZE = 30;
+                for (let i = 0; i < uniqueBlocks.length; i += BLOCK_BATCH_SIZE) {
+                    const blockBatch = uniqueBlocks.slice(i, i + BLOCK_BATCH_SIZE);
+                    if (i % 90 === 0) console.log(`Fetching DOB Jobs blocks ${i + 1}-${Math.min(i + BLOCK_BATCH_SIZE, uniqueBlocks.length)}/${uniqueBlocks.length}`);
+                    
+                    // Query by borough TEXT and block IN clause (blocks are 5-digit padded strings)
+                    const blockList = blockBatch.map(b => `'${b}'`).join(',');
+                    const where = `borough='${dobBoroughText}' AND block IN(${blockList})`;
+                    
                     try {
                         const res = await axios.get(DOBJOBS_ENDPOINT, { params: { $where: where, $limit: 50000 } });
                         allDobJobs = [...allDobJobs, ...res.data];
                     } catch (err) {
-                        console.error(`Error fetching DOB Jobs address batch ${i / ADDR_BATCH_SIZE + 1}:`, err.message);
+                        console.error(`Error fetching DOB Jobs block batch ${Math.floor(i / BLOCK_BATCH_SIZE) + 1}:`, err.message);
                     }
-                    if (i + ADDR_BATCH_SIZE < addrKeys.length) {
-                        await new Promise(resolve => setTimeout(resolve, 100));
+                    
+                    if (i + BLOCK_BATCH_SIZE < uniqueBlocks.length) {
+                        await new Promise(resolve => setTimeout(resolve, 80));
                     }
                 }
 
                 console.log('DOB Jobs received:', allDobJobs.length);
-                const dobJobsRes = { data: allDobJobs };
-
-                const dobJobs = dobJobsRes.data;
-                console.log('DOB Jobs received:', dobJobs.length);
                 
-                // Match DOB jobs to properties by normalized address, with BBL fallback
+                // Match DOB jobs to properties by BBL (block + lot)
                 let dobJobsMatched = 0;
-                dobJobs.forEach(job => {
-                    const street = job.street_name || job.streetname || job.street || null;
-                    const house = job.house__ || job.house || job.houseno || job.house_number || null;
-                    const key = normalizeAddressParts(house, street);
-                    let matched = false;
-                    if (key && addressIndex[key] && addressIndex[key].length) {
-                        let candidates = addressIndex[key];
-                        if (candidates.length > 1 && job.block) {
-                            const jobBlock = String(job.block).replace(/[^0-9]/g, '');
-                            const filtered = candidates.filter(bbl => bbl.substring(1, 6) === jobBlock.padStart(5, '0'));
-                            if (filtered.length) candidates = filtered;
-                        }
-                        const bbl = candidates[0];
-                        if (properties[bbl]) {
-                            // Annotate job with display address and unit for UI
+                allDobJobs.forEach(job => {
+                    // Build BBL from job's block and lot - pad to match our 10-digit format
+                    const jobBlock = job.block ? String(job.block).replace(/[^0-9]/g, '').padStart(5, '0') : null;
+                    const jobLot = job.lot ? String(job.lot).replace(/[^0-9]/g, '').padStart(4, '0') : null;
+                    
+                    if (jobBlock && jobLot) {
+                        const jobBbl = acrisBoroughCode + jobBlock + jobLot;
+                        if (properties[jobBbl]) {
                             job._unit = extractUnitFromJob(job);
                             job._displayAddress = buildDisplayAddressFromJob(job);
-                            properties[bbl].dobJobs = properties[bbl].dobJobs || [];
-                            properties[bbl].dobJobs.push(job);
+                            properties[jobBbl].dobJobs = properties[jobBbl].dobJobs || [];
+                            properties[jobBbl].dobJobs.push(job);
                             dobJobsMatched++;
-                            matched = true;
-                        }
-                    }
-                    if (!matched) {
-                        // Fallback to BBL-based
-                        if (job.bbl) {
-                            const norm = normalizeBBLString(job.bbl);
-                            if (norm && properties[norm]) {
-                                job._unit = extractUnitFromJob(job);
-                                job._displayAddress = buildDisplayAddressFromJob(job);
-                                properties[norm].dobJobs = properties[norm].dobJobs || [];
-                                properties[norm].dobJobs.push(job);
-                                dobJobsMatched++;
-                            }
-                        } else if (job.block && job.lot && job.borough) {
-                            const boroughRaw = String(job.borough).toUpperCase();
-                            const numericJobBorough = boroughTextToNumeric[boroughRaw] || (['1','2','3','4','5'].includes(boroughRaw) ? boroughRaw : undefined);
-                            if (numericJobBorough) {
-                                const blockDigits = String(job.block).replace(/[^0-9]/g, '');
-                                const lotDigits = String(job.lot).replace(/[^0-9]/g, '');
-                                const jobBbl = makeBBL(numericJobBorough, blockDigits, lotDigits);
-                                if (jobBbl && properties[jobBbl]) {
-                                    job._unit = extractUnitFromJob(job);
-                                    job._displayAddress = buildDisplayAddressFromJob(job);
-                                    properties[jobBbl].dobJobs = properties[jobBbl].dobJobs || [];
-                                    properties[jobBbl].dobJobs.push(job);
-                                    dobJobsMatched++;
-                                }
-                            }
                         }
                     }
                 });
-                console.log(`DOB Jobs matched to properties (address-first): ${dobJobsMatched}`);
-                setProgress(p => ({ ...p, dob: `${dobJobs.length} records processed, ${dobJobsMatched} matched` }));
+                
+                console.log(`DOB Jobs matched to properties: ${dobJobsMatched}`);
+                setProgress(p => ({ ...p, dob: `${allDobJobs.length} records, ${dobJobsMatched} matched` }));
             } catch (err) {
                 console.error('Error fetching DOB Jobs:', err.message);
                 setProgress(p => ({ ...p, dob: `Error: ${err.message}` }));
                 // Continue with empty data
             }
             
-            // 4. Fetch 311 complaints
+            // 4. Fetch 311 complaints by community board (much more reliable than BBL)
             setProgress(p => ({ ...p, 311: 'loading...' }));
             try {
-                console.log('Fetching 311 complaints for target BBLs');
+                console.log('Fetching 311 complaints by community board');
                 let all311Complaints = [];
                 
-                // Use BBL IN(...) batches; mitigate rate limits with smaller batches and retry on 429
-                const targetBBLsArr = Object.keys(properties);
-                const BBL_BATCH_SIZE = 10;
+                // Get community districts from our PLUTO properties
+                const communityDistricts = [...new Set(Object.values(properties)
+                    .map(p => p.plutoData?.cd)
+                    .filter(cd => cd))];
+                
                 const createdCutoff = new Date();
                 createdCutoff.setDate(createdCutoff.getDate() - 60);
-                const createdIso = createdCutoff.toISOString();
-                let bblQuerySupported = true;
-                for (let i = 0; i < targetBBLsArr.length; i += BBL_BATCH_SIZE) {
-                    if (!bblQuerySupported) break;
-                    const batch = targetBBLsArr.slice(i, i + BBL_BATCH_SIZE);
-                    const where = `created_date >= '${createdIso}' AND bbl IN(${batch.map(b => `'${b}'`).join(',')})`;
-                    let attempt = 0;
-                    const maxAttempts = 2;
-                    while (attempt < maxAttempts) {
-                        try {
-                            const threeoneoneRes = await axios.get(THREEONEONE_ENDPOINT, {
-                                params: { $where: where, $limit: 50000, $select: 'unique_key,bbl,incident_address,complaint_type,created_date' }
-                            });
-                            all311Complaints = [...all311Complaints, ...threeoneoneRes.data];
-                            break; // success
-                        } catch (err) {
-                            const status = err?.response?.status;
-                            if (status === 429 && attempt + 1 < maxAttempts) {
-                                console.warn(`311 batch ${i / BBL_BATCH_SIZE + 1} hit 429; retrying after backoff...`);
-                                await new Promise(resolve => setTimeout(resolve, 1500));
-                                attempt++;
-                                continue;
-                            } else if (status === 400) {
-                                console.warn('311 BBL-based query not supported or invalid; switching to address-based fallback.');
-                                bblQuerySupported = false;
-                                break;
-                            }
-                            console.error(`Error fetching 311 complaints batch ${i / BBL_BATCH_SIZE + 1}:`, err.message);
-                            break;
-                        }
-                    }
-                    if (i + BBL_BATCH_SIZE < targetBBLsArr.length) {
-                        await new Promise(resolve => setTimeout(resolve, 250));
-                    }
-                }
+                // Use simple date format without timezone (YYYY-MM-DDTHH:MM:SS) for Socrata compatibility
+                const createdIso = createdCutoff.toISOString().replace('Z', '').split('.')[0];
                 
-                // Fallback: if BBL-based fetch is empty, try by address
-                if (all311Complaints.length === 0) {
-                    const boroughText311 = Object.keys(boroughTextToNumeric).find(k => boroughTextToNumeric[k] === acrisBoroughCode) || 'MANHATTAN';
-                    const addresses = Array.from(new Set(Object.values(properties)
-                        .map(p => (p.address || '').toString().trim().toUpperCase())
-                        .filter(a => a.length > 0)));
-                    const ADDR_BATCH_SIZE = 20;
-                    for (let i = 0; i < addresses.length; i += ADDR_BATCH_SIZE) {
-                        const batch = addresses.slice(i, i + ADDR_BATCH_SIZE);
-                        const safeList = batch.map(a => `'${a.replace(/'/g, "''")}'`).join(',');
-                        const where = `borough='${boroughText311}' AND incident_address IN(${safeList})`;
-                        try {
-                            const res = await axios.get(THREEONEONE_ENDPOINT, {
-                                params: { $where: where, $limit: 50000 }
-                            });
-                            all311Complaints = [...all311Complaints, ...res.data];
-                        } catch (err) {
-                            console.error(`Error fetching 311 by address batch ${i / ADDR_BATCH_SIZE + 1}:`, err.message);
-                        }
-                        if (i + ADDR_BATCH_SIZE < addresses.length) {
-                            await new Promise(resolve => setTimeout(resolve, 100));
-                        }
-                    }
+                // 311 uses borough name format
+                const boroughCodeToText = { '1': 'MANHATTAN', '2': 'BRONX', '3': 'BROOKLYN', '4': 'QUEENS', '5': 'STATEN ISLAND' };
+                const boroughText = boroughCodeToText[acrisBoroughCode] || 'MANHATTAN';
+                
+                // Fetch by borough - simpler and more reliable
+                console.log(`Fetching 311 for ${boroughText}, last 60 days, since ${createdIso}`);
+                setProgress(p => ({ ...p, 311: 'fetching...' }));
+                try {
+                    const where = `created_date >= '${createdIso}' AND borough='${boroughText}'`;
+                    const res = await axios.get(THREEONEONE_ENDPOINT, {
+                        params: { $where: where, $limit: 50000, $select: 'unique_key,bbl,incident_address,complaint_type,created_date,borough' }
+                    });
+                    all311Complaints = res.data;
+                    console.log(`311 complaints fetched for ${boroughText}:`, all311Complaints.length);
+                } catch (err) {
+                    console.error('Error fetching 311 by borough:', err.message);
                 }
                 
                 console.log('311 complaints received:', all311Complaints.length);
-                const threeoneoneRes = { data: all311Complaints };
                 
-                const complaints = threeoneoneRes.data;
-                console.log('311 complaints received:', complaints.length);
-                
-                // Link complaints to properties by BBL when available, then fallback to normalized address matching
+                // Match complaints to properties by BBL
                 let complaintsMatched = 0;
-                complaints.forEach(complaint => {
-                    // Try BBL matching first (more accurate)
-                    if (complaint.bbl && properties[complaint.bbl]) {
-                        const prop = properties[complaint.bbl];
-                        prop.complaints = prop.complaints || [];
-                        prop.complaints.push(complaint);
+                all311Complaints.forEach(complaint => {
+                    const bbl = complaint.bbl ? normalizeBBLString(complaint.bbl) : null;
+                    if (bbl && properties[bbl]) {
+                        properties[bbl].complaints = properties[bbl].complaints || [];
+                        properties[bbl].complaints.push(complaint);
                         complaintsMatched++;
-                    } 
-                    // Fallback to address matching if BBL not available or no match found
-                    else if (complaint.incident_address) {
-                        const { house, street } = parseHouseAndStreet(complaint.incident_address);
-                        const key = normalizeAddressParts(house, street);
-                        if (key && addressIndex[key] && addressIndex[key].length) {
-                            addressIndex[key].forEach(bbl => {
-                                const prop = properties[bbl];
-                                if (!prop) return;
-                                prop.complaints = prop.complaints || [];
-                                prop.complaints.push(complaint);
-                                complaintsMatched++;
-                            });
-                        }
                     }
                 });
                 
-                console.log('311 complaints matched to properties:', complaintsMatched);
-
-                // Ensure each property's display address includes a house number if possible
+                console.log('311 complaints matched:', complaintsMatched);
                 Object.values(properties).forEach(prop => ensureDisplayAddressWithNumber(prop));
-                setProgress(p => ({ ...p, 311: `${complaints.length} records (${complaintsMatched} matched)` }));
+                setProgress(p => ({ ...p, 311: `${all311Complaints.length} records, ${complaintsMatched} matched` }));
             } catch (err) {
                 console.error('Error fetching 311 complaints:', err.message);
                 setProgress(p => ({ ...p, 311: `Error: ${err.message}` }));
                 // Continue with empty data
+            }
+            
+            // 5. Fetch HPD Violations (more specific than 311 for building issues)
+            setProgress(p => ({ ...p, hpdViolations: 'loading...' }));
+            try {
+                console.log('Fetching HPD Violations by BBL');
+                let allHpdViolations = [];
+                
+                // HPD Violations use BBL field directly
+                const targetBBLsForHpd = Object.keys(properties);
+                const HPD_BATCH_SIZE = 50;
+                
+                for (let i = 0; i < targetBBLsForHpd.length; i += HPD_BATCH_SIZE) {
+                    const batch = targetBBLsForHpd.slice(i, i + HPD_BATCH_SIZE);
+                    if (i % 200 === 0) {
+                        console.log(`Fetching HPD Violations ${i + 1}-${Math.min(i + HPD_BATCH_SIZE, targetBBLsForHpd.length)}/${targetBBLsForHpd.length}`);
+                        setProgress(p => ({ ...p, hpdViolations: `${i}/${targetBBLsForHpd.length} props...` }));
+                    }
+                    
+                    // HPD uses 10-digit BBL format
+                    const bblList = batch.map(b => `'${b}'`).join(',');
+                    const where = `bbl IN(${bblList})`;
+                    
+                    try {
+                        const res = await axios.get(HPD_VIOLATIONS_ENDPOINT, {
+                            params: { $where: where, $limit: 50000, $select: 'violationid,bbl,boroid,block,lot,class,inspectiondate,approveddate,currentstatus,currentstatusdate,novdescription' }
+                        });
+                        allHpdViolations = [...allHpdViolations, ...res.data];
+                    } catch (err) {
+                        console.error(`Error fetching HPD Violations batch:`, err.message);
+                    }
+                    
+                    if (i + HPD_BATCH_SIZE < targetBBLsForHpd.length) {
+                        await new Promise(resolve => setTimeout(resolve, 80));
+                    }
+                }
+                
+                console.log('HPD Violations received:', allHpdViolations.length);
+                
+                // Match violations to properties - track unique properties with violations
+                const propsWithViolations = new Set();
+                allHpdViolations.forEach(violation => {
+                    const bbl = violation.bbl ? String(violation.bbl).padStart(10, '0') : null;
+                    if (bbl && properties[bbl]) {
+                        properties[bbl].hpdViolations = properties[bbl].hpdViolations || [];
+                        properties[bbl].hpdViolations.push(violation);
+                        propsWithViolations.add(bbl);
+                    }
+                });
+                
+                console.log('HPD Violations: properties with violations:', propsWithViolations.size);
+                setProgress(p => ({ ...p, hpdViolations: `${allHpdViolations.length} violations, ${propsWithViolations.size} props` }));
+            } catch (err) {
+                console.error('Error fetching HPD Violations:', err.message);
+                setProgress(p => ({ ...p, hpdViolations: `Error: ${err.message}` }));
+            }
+            
+            // 6. Fetch HPD Registrations (owner information for portfolio analysis)
+            setProgress(p => ({ ...p, hpdRegistrations: 'loading...' }));
+            const ownerPortfolio = {}; // Map owner name -> list of BBLs they own
+            try {
+                console.log('Fetching HPD Registrations for owner data');
+                let allRegistrations = [];
+                
+                const targetBBLsForReg = Object.keys(properties);
+                const REG_BATCH_SIZE = 20; // Smaller batches for OR-based queries
+                
+                // Parse BBL into components for querying (HPD uses separate boroid/block/lot fields)
+                const parseBBL = (bbl) => {
+                    const s = String(bbl).padStart(10, '0');
+                    return { boroid: s[0], block: parseInt(s.slice(1, 6), 10), lot: parseInt(s.slice(6), 10) };
+                };
+                
+                for (let i = 0; i < targetBBLsForReg.length; i += REG_BATCH_SIZE) {
+                    const batch = targetBBLsForReg.slice(i, i + REG_BATCH_SIZE);
+                    if (i % 200 === 0) {
+                        console.log(`Fetching HPD Registrations ${i + 1}-${Math.min(i + REG_BATCH_SIZE, targetBBLsForReg.length)}/${targetBBLsForReg.length}`);
+                        setProgress(p => ({ ...p, hpdRegistrations: `${i}/${targetBBLsForReg.length}...` }));
+                    }
+                    
+                    // Build OR conditions for each BBL (boroid='1' AND block=123 AND lot=45)
+                    const conditions = batch.map(bbl => {
+                        const { boroid, block, lot } = parseBBL(bbl);
+                        return `(boroid='${boroid}' AND block=${block} AND lot=${lot})`;
+                    });
+                    const where = conditions.join(' OR ');
+                    
+                    try {
+                        const res = await axios.get(HPD_REGISTRATIONS_ENDPOINT, {
+                            params: { $where: where, $limit: 50000, $select: 'registrationid,boroid,block,lot,housenumber,streetname,ownername,businesshousenumber,businessstreetname,businesscity,businessstate,businesszip' }
+                        });
+                        allRegistrations = [...allRegistrations, ...res.data];
+                    } catch (err) {
+                        console.error(`Error fetching HPD Registrations batch:`, err.message);
+                    }
+                    
+                    if (i + REG_BATCH_SIZE < targetBBLsForReg.length) {
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                    }
+                }
+                
+                console.log('HPD Registrations received:', allRegistrations.length);
+                
+                // Match registrations to properties and build owner portfolio
+                allRegistrations.forEach(reg => {
+                    const bbl = makeBBL(reg.boroid, reg.block, reg.lot);
+                    if (bbl && properties[bbl]) {
+                        properties[bbl].hpdRegistration = reg;
+                        properties[bbl].ownerName = reg.ownername;
+                        
+                        // Build owner portfolio map
+                        if (reg.ownername) {
+                            const ownerKey = reg.ownername.toUpperCase().trim();
+                            if (!ownerPortfolio[ownerKey]) {
+                                ownerPortfolio[ownerKey] = [];
+                            }
+                            if (!ownerPortfolio[ownerKey].includes(bbl)) {
+                                ownerPortfolio[ownerKey].push(bbl);
+                            }
+                        }
+                    }
+                });
+                
+                // Add portfolio size to each property
+                Object.values(properties).forEach(prop => {
+                    if (prop.ownerName) {
+                        const ownerKey = prop.ownerName.toUpperCase().trim();
+                        prop.ownerPortfolioSize = ownerPortfolio[ownerKey]?.length || 1;
+                        prop.ownerPortfolioBBLs = ownerPortfolio[ownerKey] || [];
+                    }
+                });
+                
+                console.log('Unique owners found:', Object.keys(ownerPortfolio).length);
+                setProgress(p => ({ ...p, hpdRegistrations: `${allRegistrations.length} records` }));
+            } catch (err) {
+                console.error('Error fetching HPD Registrations:', err.message);
+                setProgress(p => ({ ...p, hpdRegistrations: `Error: ${err.message}` }));
+            }
+            
+            // 7. Fetch ACRIS Mortgage data to identify loans that may be maturing
+            setProgress(p => ({ ...p, mortgages: 'loading...' }));
+            let loansMaturing = 0;
+            try {
+                const docIds = Object.keys(docIdToBblMap);
+                console.log(`Fetching ACRIS Mortgages for ${docIds.length} document IDs`);
+                let allMortgages = [];
+                
+                // Fetch mortgages using the same document IDs we found in Legals
+                if (docIds.length > 0) {
+                    const docIdBatchesMtg = createBblBatches(docIds, 50);
+                    
+                    for (let batchIndex = 0; batchIndex < docIdBatchesMtg.length; batchIndex++) {
+                        const batch = docIdBatchesMtg[batchIndex];
+                        
+                        // Progress update every 10 batches
+                        if (batchIndex % 10 === 0) {
+                            const progress = Math.round((batchIndex / docIdBatchesMtg.length) * 100);
+                            console.log(`Mortgages batch ${batchIndex + 1}/${docIdBatchesMtg.length} (${progress}%), ${allMortgages.length} found so far`);
+                            setProgress(p => ({ ...p, mortgages: `${progress}% (${allMortgages.length} found)` }));
+                        }
+                        
+                        const docIdQueryParts = batch.map(docId => `document_id='${docId}'`);
+                        const docIdQueryString = docIdQueryParts.join(' OR ');
+                        
+                        try {
+                            const mortgageRes = await axios.get(MORTGAGE_ENDPOINT, {
+                                params: {
+                                    $where: `(${docIdQueryString})`,
+                                    $limit: 100 * batch.length
+                                }
+                            });
+                            
+                            allMortgages = [...allMortgages, ...mortgageRes.data];
+                            
+                            if (batchIndex < docIdBatchesMtg.length - 1) {
+                                await new Promise(resolve => setTimeout(resolve, 100));
+                            }
+                        } catch (err) {
+                            console.error(`Error fetching mortgages batch ${batchIndex + 1}:`, err.message);
+                        }
+                    }
+                } else {
+                    console.log('No document IDs to fetch mortgages for');
+                }
+                
+                console.log('ACRIS Mortgages received:', allMortgages.length);
+                setProgress(p => ({ ...p, mortgages: `${allMortgages.length} records` }));
+                
+                // Match mortgages to properties and analyze loan age
+                allMortgages.forEach(mortgage => {
+                    if (docIdToBblMap[mortgage.document_id]) {
+                        docIdToBblMap[mortgage.document_id].forEach(bblKey => {
+                            const prop = properties[bblKey];
+                            if (prop) {
+                                prop.mortgages = prop.mortgages || [];
+                                prop.mortgages.push(mortgage);
+                                
+                                // Calculate mortgage age
+                                if (mortgage.document_date) {
+                                    const mortgageAge = timeDiffInMonths(mortgage.document_date);
+                                    // Typical mortgage terms: 5, 7, 10, 15, 20, 25, 30 years
+                                    // Flag if mortgage is approaching common maturity periods
+                                    const yearsOld = mortgageAge / 12;
+                                    
+                                    // Check if mortgage is near common maturity milestones
+                                    const nearMaturity = [5, 7, 10, 15, 20, 25, 30].some(term => {
+                                        const diff = Math.abs(yearsOld - term);
+                                        return diff <= 1; // Within 1 year of a common term
+                                    });
+                                    
+                                    if (nearMaturity && yearsOld >= 4) {
+                                        prop.loanNearMaturity = true;
+                                        prop.mortgageAgeYears = Math.floor(yearsOld);
+                                        loansMaturing++;
+                                    }
+                                    
+                                    // Track oldest mortgage for the property
+                                    if (!prop.oldestMortgageAge || mortgageAge > prop.oldestMortgageAge) {
+                                        prop.oldestMortgageAge = mortgageAge;
+                                        prop.mortgageAmount = mortgage.document_amt;
+                                    }
+                                }
+                            }
+                        });
+                    }
+                });
+                
+                console.log('Properties with maturing loans:', loansMaturing);
+            } catch (err) {
+                console.error('Error fetching mortgages:', err.message);
+                setProgress(p => ({ ...p, mortgages: `Error: ${err.message}` }));
             }
             
             // --- METRIC CALCULATION & SCORING ---
@@ -998,7 +1131,101 @@ export function usePropertyProcessor(selectedBorough, selection) {
                     prop.complaintTypes = [];
                 }
                 
-                // 6. DEVELOPMENT POTENTIAL (FAR)
+                // 6. LOAN MATURITY - STRONG INDICATOR OF POTENTIAL SALE
+                if (prop.loanNearMaturity) {
+                    prop.score += 1.0;
+                    prop.signalBadges.push(`Loan ~${prop.mortgageAgeYears}yr (near maturity)`);
+                }
+                // Also flag very old mortgages (20+ years) as potential refinance/sale candidates
+                if (prop.oldestMortgageAge && prop.oldestMortgageAge >= 240) { // 20+ years
+                    prop.score += 0.5;
+                    prop.signalBadges.push('Long-held mortgage (20+ yrs)');
+                }
+                
+                // 7. HPD VIOLATIONS - STRONG INDICATOR OF DEFERRED MAINTENANCE
+                if (prop.hpdViolations && prop.hpdViolations.length > 0) {
+                    // Count open violations (not yet resolved)
+                    const openViolations = prop.hpdViolations.filter(v => 
+                        v.currentstatus && !v.currentstatus.toUpperCase().includes('CLOSE'));
+                    prop.openHpdViolations = openViolations.length;
+                    prop.totalHpdViolations = prop.hpdViolations.length;
+                    
+                    // Class A = non-hazardous, B = hazardous, C = immediately hazardous
+                    const classC = prop.hpdViolations.filter(v => v.class === 'C').length;
+                    const classB = prop.hpdViolations.filter(v => v.class === 'B').length;
+                    
+                    prop.hpdClassC = classC;
+                    prop.hpdClassB = classB;
+                    
+                    // Scoring based on severity
+                    if (classC >= 5) {
+                        prop.score += 1.5;
+                        prop.signalBadges.push(`${classC} Class C Violations (Critical)`);
+                    } else if (classC >= 2) {
+                        prop.score += 1.0;
+                        prop.signalBadges.push(`${classC} Class C Violations`);
+                    } else if (classC >= 1) {
+                        prop.score += 0.5;
+                        prop.signalBadges.push('Class C Violation');
+                    }
+                    
+                    if (classB >= 10) {
+                        prop.score += 0.8;
+                        prop.signalBadges.push(`${classB} Class B Violations`);
+                    } else if (classB >= 5) {
+                        prop.score += 0.4;
+                        prop.signalBadges.push(`${classB} Class B Violations`);
+                    }
+                    
+                    // High total violations indicates overwhelmed owner
+                    if (prop.totalHpdViolations >= 20) {
+                        prop.score += 0.5;
+                        prop.signalBadges.push('High Violation Count');
+                    }
+                }
+                
+                // 8. ESTATE/EXECUTOR DEED - STRONG INDICATOR (inheritance often leads to sale)
+                if (prop.isEstateDeed) {
+                    prop.score += 1.5;
+                    prop.signalBadges.push(`Estate Deed (${prop.estateDeedType})`);
+                }
+                
+                // 9. FIX & FLIP PATTERN - Recent purchase + renovation = likely flip
+                if (prop.tenureMonths && prop.tenureMonths <= 36) { // Purchased in last 3 years
+                    const hasRenovation = prop.dobJobs && prop.dobJobs.some(job => {
+                        const renovationTypes = ['A1', 'A2', 'AL', 'DM'];
+                        return renovationTypes.includes(job.job_type);
+                    });
+                    
+                    if (hasRenovation) {
+                        prop.isFixAndFlip = true;
+                        prop.score += 2.0;
+                        prop.signalBadges.push('Fix & Flip Pattern');
+                    }
+                }
+                
+                // 10. PORTFOLIO LANDLORD - Multiple properties may indicate liquidation potential
+                if (prop.ownerPortfolioSize && prop.ownerPortfolioSize >= 3) {
+                    prop.isPortfolioProperty = true;
+                    if (prop.ownerPortfolioSize >= 10) {
+                        prop.score += 0.8;
+                        prop.signalBadges.push(`Portfolio Owner (${prop.ownerPortfolioSize} properties)`);
+                    } else if (prop.ownerPortfolioSize >= 5) {
+                        prop.score += 0.5;
+                        prop.signalBadges.push(`Portfolio Owner (${prop.ownerPortfolioSize} properties)`);
+                    } else {
+                        prop.score += 0.3;
+                        prop.signalBadges.push(`Multi-property Owner (${prop.ownerPortfolioSize})`);
+                    }
+                    
+                    // Extra score if portfolio owner has violations across properties
+                    if (prop.hpdViolations && prop.hpdViolations.length > 0 && prop.ownerPortfolioSize >= 5) {
+                        prop.score += 0.5;
+                        prop.signalBadges.push('Portfolio + Violations');
+                    }
+                }
+                
+                // 11. DEVELOPMENT POTENTIAL (FAR)
                 // Use PLUTO fields to estimate remaining FAR = max(residfar, commfar, facilfar) - builtfar
                 {
                     const pd = prop.plutoData || {};
@@ -1062,7 +1289,7 @@ export function usePropertyProcessor(selectedBorough, selection) {
             setStats({
                 likelySellers: flaggedCount,
                 avgScore: avgScore,
-                loansMaturing: 0,
+                loansMaturing: loansMaturing,
                 displayedLeads: displayLeads.length,
                 totalAnalyzed: processedLeads.length,
             });

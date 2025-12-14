@@ -10,26 +10,24 @@ const FALLBACK_STYLE = 'https://demotiles.maplibre.org/style.json';
 const defaultCenter = [-73.96, 40.75];
 const defaultZoom = 10.5;
 
-// MapPluto displays the map and highlights the selected neighborhood. When a neighborhood is clicked, it calls setSelectedNeighborhood (from App).
-export default function MapPluto({ selectedNeighborhood, setSelectedNeighborhood }) {
+// MapPluto displays the map and highlights the selected neighborhood. 
+// When leads are provided, it visualizes them as interactive points.
+export default function MapPluto({ selectedNeighborhood, setSelectedNeighborhood, leads = [], hoveredBBL = null, onSelectLead }) {
   const mapContainer = useRef(null);
   const mapRef = useRef(null);
+  const popupRef = useRef(null); // Ref for the popup instance
   const [geojson, setGeojson] = useState(null);
   const [mapReady, setMapReady] = useState(false);
   const [mapError, setMapError] = useState('');
 
-  // Fetch GeoJSON
+  // Fetch GeoJSON for Neighborhoods
   useEffect(() => {
     fetch(GEOJSON_URL)
       .then(res => res.json())
       .then((data) => {
-        // eslint-disable-next-line no-console
-        console.log('[MapPluto] fetched neighborhoods:', Array.isArray(data?.features) ? data.features.length : 0);
         setGeojson(data);
       })
       .catch((err) => {
-        // eslint-disable-next-line no-console
-        console.error('[MapPluto] failed to fetch neighborhoods', err);
         setGeojson(null);
         setMapError('Failed to load neighborhood boundaries.');
       });
@@ -38,55 +36,240 @@ export default function MapPluto({ selectedNeighborhood, setSelectedNeighborhood
   // Initialize map only once
   useEffect(() => {
     if (!mapContainer.current || mapRef.current) return;
-    // eslint-disable-next-line no-console
-    console.log('[MapPluto] creating map instance...');
+    
     const map = new maplibregl.Map({
       container: mapContainer.current,
       style: MAP_STYLE,
       center: defaultCenter,
       zoom: defaultZoom,
-      attributionControl: true,
+      attributionControl: false, // Cleaner look
     });
-    // Ensure map draws when container becomes visible
+    
+    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+
     map.on('load', () => {
-      // eslint-disable-next-line no-console
-      console.log('[MapPluto] map load event');
       try { map.resize(); } catch {}
       setMapReady(true);
     });
+
     const onWindowResize = () => {
       try { map.resize(); } catch {}
     };
     window.addEventListener('resize', onWindowResize);
-    // Log any map errors to help debugging
+
+    // Error handling
     let usedFallback = false;
-    map.on('style.load', () => {
-      // eslint-disable-next-line no-console
-      console.log('[MapPluto] style.load event');
-    });
     map.on('error', (e) => {
-      // eslint-disable-next-line no-console
-      console.error('MapLibre error:', e && (e.error || e));
-      setMapError((e && (e.error && e.error.message)) || 'An error occurred initializing the map.');
       const msg = (e && e.error && e.error.message) || '';
       const isStyleIssue = msg.includes('Failed to fetch') || msg.includes('style') || msg.includes('Style') || msg.includes('cancel');
       if (!usedFallback && isStyleIssue) {
         usedFallback = true;
         try {
-          // eslint-disable-next-line no-console
-          console.warn('[MapPluto] switching to fallback style');
           map.setStyle(FALLBACK_STYLE);
         } catch {}
       }
+      if (!isStyleIssue && !mapError) {
+          // Only show non-style errors if distinct
+          // setMapError('Map error: ' + msg); 
+      }
     });
+
     mapRef.current = map;
+    
+    // Handle container resizing
+    const resizeObserver = new ResizeObserver(() => {
+      if (mapRef.current) {
+        try { mapRef.current.resize(); } catch {}
+      }
+    });
+    if (mapContainer.current) {
+      resizeObserver.observe(mapContainer.current);
+    }
+
     return () => {
       window.removeEventListener('resize', onWindowResize);
+      resizeObserver.disconnect();
+      if (popupRef.current) popupRef.current.remove();
       try { map.remove(); } catch {}
-      // Important: allow re-init on React 18 StrictMode double-mount
       mapRef.current = null;
     };
   }, []);
+
+  // Visualizing Leads (Dots)
+  useEffect(() => {
+      const map = mapRef.current;
+      if (!map || !mapReady) return;
+      
+      const sourceId = 'leads-source';
+      const layerIdCircle = 'leads-circle';
+      const layerIdOuter = 'leads-outer';
+
+      // If no leads, remove layers if they exist
+      if (!leads || leads.length === 0) {
+          if (map.getLayer(layerIdCircle)) map.removeLayer(layerIdCircle);
+          if (map.getLayer(layerIdOuter)) map.removeLayer(layerIdOuter);
+          if (map.getSource(sourceId)) map.removeSource(sourceId);
+          return;
+      }
+
+      // Prepare GeoJSON points for leads
+      const validLeads = leads.filter(l => l.plutoData && l.plutoData.latitude && l.plutoData.longitude);
+      const leadsGeoJson = {
+          type: 'FeatureCollection',
+          features: validLeads.map(l => ({
+              type: 'Feature',
+              geometry: {
+                  type: 'Point',
+                  coordinates: [parseFloat(l.plutoData.longitude), parseFloat(l.plutoData.latitude)]
+              },
+              properties: {
+                  bbl: l.bbl,
+                  address: l.address,
+                  score: l.score,
+                  permits: l.permitsLast12Months || 0,
+                  complaints: l.complaintsLast30Days || 0,
+                  lastSale: l.lastSaleDate,
+                  // Determine category for coloring
+                  category: (() => {
+                      if (l.score >= 4.0) return 'high_score';
+                      if (l.permitsLast12Months > 0) return 'permit';
+                      if (l.complaintsLast30Days > 0) return 'complaint';
+                      if (l.lastSaleDate && (new Date().getFullYear() - new Date(l.lastSaleDate).getFullYear() <= 2)) return 'sale';
+                      return 'other';
+                  })()
+              }
+          }))
+      };
+
+      // Add Source
+      if (!map.getSource(sourceId)) {
+          map.addSource(sourceId, {
+              type: 'geojson',
+              data: leadsGeoJson
+          });
+      } else {
+          map.getSource(sourceId).setData(leadsGeoJson);
+      }
+
+      // Add Layers
+      if (!map.getLayer(layerIdOuter)) {
+          map.addLayer({
+              id: layerIdOuter,
+              type: 'circle',
+              source: sourceId,
+              paint: {
+                  'circle-radius': 8,
+                  'circle-color': '#ffffff',
+                  'circle-opacity': 0.8,
+                  'circle-stroke-width': 0
+              }
+          });
+      }
+      
+      if (!map.getLayer(layerIdCircle)) {
+          map.addLayer({
+              id: layerIdCircle,
+              type: 'circle',
+              source: sourceId,
+              paint: {
+                  'circle-radius': 5,
+                  'circle-color': [
+                      'match',
+                      ['get', 'category'],
+                      'high_score', '#ef4444', // Red for hot
+                      'permit', '#10b981',      // Green for active
+                      'complaint', '#f59e0b',   // Orange for risk
+                      'sale', '#3b82f6',        // Blue for recent
+                      '#64748b'                 // Slate for others
+                  ],
+                  'circle-stroke-width': 1,
+                  'circle-stroke-color': '#ffffff'
+              }
+          });
+
+          // Highlight Layer (Hidden by default)
+          map.addLayer({
+              id: 'leads-highlight',
+              type: 'circle',
+              source: sourceId,
+              filter: ['==', ['get', 'bbl'], ''], // Initially match nothing
+              paint: {
+                  'circle-radius': 12,
+                  'circle-color': 'transparent',
+                  'circle-stroke-width': 3,
+                  'circle-stroke-color': '#3b82f6',
+                  'circle-opacity': 0
+              }
+          });
+
+          // Interactions
+          const popup = new maplibregl.Popup({
+              closeButton: false,
+              closeOnClick: false,
+              offset: 10,
+              maxWidth: '300px'
+          });
+          popupRef.current = popup;
+
+          map.on('mouseenter', layerIdCircle, (e) => {
+              map.getCanvas().style.cursor = 'pointer';
+              const coords = e.features[0].geometry.coordinates.slice();
+              const props = e.features[0].properties;
+              
+              // Ensure we don't cover the point
+              while (Math.abs(e.lngLat.lng - coords[0]) > 180) {
+                  coords[0] += e.lngLat.lng > coords[0] ? 360 : -360;
+              }
+
+              const html = `
+                  <div style="font-family: -apple-system, sans-serif; padding: 4px;">
+                      <div style="font-weight: 600; font-size: 13px; color: #0f172a; margin-bottom: 2px;">${props.address}</div>
+                      <div style="font-size: 11px; color: #64748b; margin-bottom: 6px;">BBL: ${props.bbl}</div>
+                      <div style="display: flex; gap: 6px; align-items: center;">
+                          <span style="background: ${props.score >= 3 ? '#ecfdf5' : '#f1f5f9'}; color: ${props.score >= 3 ? '#059669' : '#475569'}; padding: 2px 6px; border-radius: 4px; font-weight: 600; font-size: 11px;">
+                              Score: ${parseFloat(props.score).toFixed(1)}
+                          </span>
+                          ${props.permits > 0 ? `<span style="font-size: 11px; color: #10b981;">🔨 ${props.permits} Jobs</span>` : ''}
+                          ${props.complaints > 0 ? `<span style="font-size: 11px; color: #f59e0b;">⚠️ ${props.complaints} Issues</span>` : ''}
+                      </div>
+                  </div>
+              `;
+
+              popup.setLngLat(coords).setHTML(html).addTo(map);
+          });
+
+          map.on('mouseleave', layerIdCircle, () => {
+              map.getCanvas().style.cursor = '';
+              popup.remove();
+          });
+
+          // Click to select
+          map.on('click', layerIdCircle, (e) => {
+              const props = e.features[0].properties;
+              if (onSelectLead && props.bbl) {
+                  onSelectLead(props.bbl);
+              }
+          });
+      }
+
+  }, [leads, mapReady]);
+
+  // Handle hover visual updates
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    
+    // Update the highlight layer filter based on hoveredBBL
+    if (map.getLayer('leads-highlight')) {
+        if (hoveredBBL) {
+            map.setFilter('leads-highlight', ['==', ['get', 'bbl'], hoveredBBL]);
+            map.setPaintProperty('leads-highlight', 'circle-opacity', 1);
+        } else {
+            map.setFilter('leads-highlight', ['==', ['get', 'bbl'], '']);
+            map.setPaintProperty('leads-highlight', 'circle-opacity', 0);
+        }
+    }
+  }, [hoveredBBL, mapReady]);
 
   // Add/update neighborhoods layer when geojson or selection changes
   useEffect(() => {
@@ -510,13 +693,25 @@ export default function MapPluto({ selectedNeighborhood, setSelectedNeighborhood
   }, [selectedNeighborhood, geojson]);
 
   return (
-    <div style={{ width: '100%', height: 420, marginBottom: 18, borderRadius: 8, overflow: 'hidden', boxShadow: '0 2px 8px rgba(0,0,0,0.07)', background: '#f1f5f9' }}>
+    <div style={{ width: '100%', height: '100%', position: 'relative', background: '#f8fafc' }}>
       {mapError && (
-        <div style={{ padding: 16, color: '#b91c1c', background: '#fef2f2' }}>
+        <div style={{ 
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            zIndex: 10,
+            padding: '12px 16px', 
+            color: '#b91c1c', 
+            background: '#fef2f2',
+            borderBottom: '1px solid #fee2e2',
+            fontSize: '0.875rem',
+            fontWeight: '500',
+        }}>
           {mapError}
         </div>
       )}
-      <div ref={mapContainer} style={{ width: '100%', height: '100%', position: 'relative' }} />
+      <div ref={mapContainer} style={{ width: '100%', height: '100%' }} />
     </div>
   );
 }

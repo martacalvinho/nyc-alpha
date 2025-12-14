@@ -1,65 +1,113 @@
 import React from 'react';
 
-const SummaryCard = ({ title, value, change, isLoading }) => (
+const SummaryCard = ({ title, subtitle, value, color = '#2563eb', change, isLoading }) => (
     <div style={{
-        border: '1px solid #e2e8f0', 
+        background: 'white',
         borderRadius: '12px', 
-        padding: '18px 20px',
-        minWidth: '220px', 
-        textAlign: 'left', 
-        backgroundColor: 'white', 
-        flex: 1,
-        boxShadow: '0 4px 12px rgba(0,0,0,0.03)',
-        transition: 'all 0.2s ease',
-        position: 'relative',
-        overflow: 'hidden'
-    }}>
+        padding: '24px',
+        border: '1px solid #f1f5f9',
+        boxShadow: '0 2px 4px rgba(0,0,0,0.02), 0 1px 0 rgba(0,0,0,0.02)',
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+        cursor: 'default',
+    }}
+    onMouseEnter={(e) => {
+        e.currentTarget.style.transform = 'translateY(-2px)';
+        e.currentTarget.style.boxShadow = '0 12px 24px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.02)';
+    }}
+    onMouseLeave={(e) => {
+        e.currentTarget.style.transform = 'translateY(0)';
+        e.currentTarget.style.boxShadow = '0 2px 4px rgba(0,0,0,0.02), 0 1px 0 rgba(0,0,0,0.02)';
+    }}
+    >
         <div style={{ 
-            fontSize: '0.9em', 
-            color: '#64748b', 
-            marginBottom: '8px',
-            fontWeight: '500',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '4px'
-        }}>{title}</div>
-        <div style={{ 
-            fontSize: '2.2em', 
-            fontWeight: '700', 
-            color: '#1e293b',
-            letterSpacing: '-0.5px',
-            marginBottom: '4px'
+            display: 'flex', 
+            justifyContent: 'space-between', 
+            alignItems: 'flex-start',
+            marginBottom: '16px'
         }}>
-            {isLoading ? (
-                <div style={{
-                    width: '60px',
-                    height: '20px',
-                    backgroundColor: '#f1f5f9',
-                    borderRadius: '4px',
-                    animation: 'pulse 1.5s infinite ease-in-out'
-                }} />
-            ) : value}
-        </div>
-        {change && !isLoading && (
-            <div style={{ 
-                fontSize: '0.9em', 
-                color: change.startsWith('+') ? '#10b981' : '#ef4444',
-                fontWeight: '500'
-            }}>
-                {change}
+            <div>
+                <div style={{ 
+                    fontSize: '0.75rem', 
+                    color: '#64748b', 
+                    fontWeight: '600',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                    marginBottom: '4px',
+                }}>
+                    {title}
+                </div>
+                
+                {subtitle && (
+                    <div style={{ 
+                        fontSize: '0.8125rem', 
+                        color: '#94a3b8',
+                        fontWeight: '400',
+                    }}>
+                        {subtitle}
+                    </div>
+                )}
             </div>
-        )}
-        <div style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            width: '5px',
-            height: '100%',
-            backgroundColor: title === 'Likely Sellers' ? '#1976d2' :
-                           title === 'New Today' ? '#10b981' :
-                           title === 'Avg Score' ? '#f59e0b' :
-                           title === 'Loans Maturing' ? '#ef4444' : '#1976d2'
-        }} />
+            
+            {/* Status Indicator Dot */}
+            <div style={{
+                width: '8px',
+                height: '8px',
+                borderRadius: '50%',
+                background: color,
+                boxShadow: `0 0 0 2px white, 0 0 0 4px ${color}15`,
+            }} />
+        </div>
+        
+        <div style={{ marginTop: 'auto' }}>
+            <div style={{ 
+                fontSize: '2.25rem', 
+                fontWeight: '700', 
+                color: '#0f172a',
+                lineHeight: 1,
+                letterSpacing: '-0.03em',
+                marginBottom: change ? '8px' : '0',
+            }}>
+                {isLoading ? (
+                    <div style={{
+                        width: '80px',
+                        height: '32px',
+                        background: '#f1f5f9',
+                        borderRadius: '6px',
+                        animation: 'pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                    }} />
+                ) : (
+                    value || '—'
+                )}
+            </div>
+            
+            {change && !isLoading && (
+                <div style={{ 
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    fontSize: '0.75rem', 
+                    color: change.startsWith('+') ? '#059669' : '#dc2626',
+                    fontWeight: '600',
+                    background: change.startsWith('+') ? '#f0fdf4' : '#fef2f2',
+                    padding: '4px 8px',
+                    borderRadius: '4px',
+                }}>
+                    <span>{change.startsWith('+') ? '↑' : '↓'}</span>
+                    {change}
+                </div>
+            )}
+        </div>
+        <style>
+            {`
+                @keyframes pulse {
+                    0%, 100% { opacity: 1; }
+                    50% { opacity: .5; }
+                }
+            `}
+        </style>
     </div>
 );
 
